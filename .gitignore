@@ -6,12 +6,9 @@ useless/*
 **/check_points*/*
 **/*pickle
 **/*tfrecord
-**/*pdf
 **/*png
 **/__pycache__/
 **/.venv/
-**/*.pt
-**/*.npz
 toy_multiphysics/metrics.tex
 toy_multiphysics/eval_metrics.tex
 toy_multiphysics/context_scaling.csv
