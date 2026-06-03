@@ -35,7 +35,7 @@ N_LAYERS       = 4
 N_HEADS        = 8
 D_FF           = 512
 COORD_DIM      = 2        # (x, t)
-EMBED_DIM      = 384      # all-MiniLM-L6-v2 output dimension
+EMBED_DIM      = 385      # 384 (MiniLM) + 1 (log-ν scalar for precise captions)
 
 CAPTION_PROB   = 0.6      # fraction of batches that use a caption
 PRECISE_PROB   = 0.5      # among caption batches: fraction that are precise
@@ -131,9 +131,21 @@ class PromptSampler:
                    for nu in self.nu]
         embs_p = enc.encode(texts_p, batch_size=64, show_progress_bar=False)
         embs_v = enc.encode(texts_v, batch_size=64, show_progress_bar=False)
-        self.caption_embs = np.stack(
-            [embs_p.astype(np.float32), embs_v.astype(np.float32)], axis=1
-        )  # [O, 2, 384]
+
+        # Precise captions: append normalised log-ν as dim 385.
+        # MiniLM cannot distinguish "nu=0.01" from "nu=0.10" as text
+        # (cosine > 0.99), so we attach the exact numeric value directly.
+        # Vague captions: text only, scalar set to 0 (withheld).
+        # This preserves the intended 3-way hierarchy from the paper:
+        #   precise (text + exact ν) > vague (text, regime only) > no caption.
+        log_nu_norm = ((np.log(self.nu) - np.log(NU_MIN))
+                       / (np.log(NU_MAX) - np.log(NU_MIN)))  # [O] in [0, 1]
+        scalar      = log_nu_norm[:, None].astype(np.float32) # [O, 1]
+        zeros       = np.zeros_like(scalar)
+
+        ep = np.concatenate([embs_p.astype(np.float32), scalar], axis=1)
+        ev = np.concatenate([embs_v.astype(np.float32), zeros],  axis=1)
+        self.caption_embs = np.stack([ep, ev], axis=1)         # [O, 2, 385]
 
     def _coords_at_time(self, idx: np.ndarray, t: float) -> np.ndarray:
         """Return [len(idx), 2] coordinate array (x, t)."""
