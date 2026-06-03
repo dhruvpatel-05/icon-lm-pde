@@ -29,38 +29,58 @@ import torch.nn.functional as F
 
 # ------------------------------ mask --------------------------------------
 
-def build_mask(types: torch.Tensor, examples: torch.Tensor) -> torch.Tensor:
-    """Build the ICON-LM attention mask for a single sequence.
+def build_mask(types: torch.Tensor, examples: torch.Tensor,
+               caption_len: int = 0) -> torch.Tensor:
+    """Build the ICON-LM attention mask, optionally with a caption prefix.
 
     Args:
-        types:    LongTensor [L] of token types (0=C, 1=U, 2=Q).
-        examples: LongTensor [L] of example indices (0-indexed).
+        types:       LongTensor [L] of token types (0=C, 1=U, 2=Q).
+        examples:    LongTensor [L] of example indices (0-indexed).
+        caption_len: Number of caption tokens prepended to the sequence.
+                     When > 0 the returned mask has shape
+                     [caption_len+L, caption_len+L] and follows the paper's
+                     prefix-attention rule (models_lm.py lines 54-56):
+                       - caption tokens attend to each other (full),
+                       - caption tokens do NOT attend to sequence tokens,
+                       - all sequence tokens attend to all caption tokens.
 
     Returns:
-        BoolTensor [L, L]: True where attention is ALLOWED, False where masked.
+        BoolTensor [caption_len+L, caption_len+L]: True where attention is
+        ALLOWED, False where masked.
     """
     L = types.shape[0]
-    ti = types[:, None].expand(L, L)            # row type
-    tj = types[None, :].expand(L, L)            # col type
-    ei = examples[:, None].expand(L, L)         # row example
-    ej = examples[None, :].expand(L, L)         # col example
+    ti = types[:, None].expand(L, L)
+    tj = types[None, :].expand(L, L)
+    ei = examples[:, None].expand(L, L)
+    ej = examples[None, :].expand(L, L)
 
     same_example = (ei == ej)
     past_example = (ej < ei)
 
-    # Past-example tokens visible iff they are C or U.
-    past_ok = past_example & ((tj == 0) | (tj == 1))
+    past_ok      = past_example & ((tj == 0) | (tj == 1))
+    same_C       = same_example & (ti == 0) & (tj == 0)
+    same_U       = same_example & (ti == 1) & ((tj == 0) | (tj == 1))
+    same_Q_to_C  = same_example & (ti == 2) & (tj == 0)
+    diag         = torch.eye(L, dtype=torch.bool, device=types.device)
+    same_Q_to_Q  = same_example & (ti == 2) & (tj == 2) & diag
 
-    # Same-example rules.
-    same_C = same_example & (ti == 0) & (tj == 0)          # C sees C in same ex.
-    same_U = same_example & (ti == 1) & ((tj == 0) | (tj == 1))  # U sees C/U
-    same_Q_to_C = same_example & (ti == 2) & (tj == 0)     # Q sees own C
-    # Q sees own Q only on the diagonal.
-    diag = torch.eye(L, dtype=torch.bool, device=types.device)
-    same_Q_to_Q = same_example & (ti == 2) & (tj == 2) & diag
+    seq_mask = past_ok | same_C | same_U | same_Q_to_C | same_Q_to_Q
 
-    mask = past_ok | same_C | same_U | same_Q_to_C | same_Q_to_Q
-    return mask
+    if caption_len == 0:
+        return seq_mask
+
+    # Prefix-attention block following the paper's mask construction.
+    # Full mask shape: [caption_len + L, caption_len + L]
+    #   [0:cap, 0:cap] = True   caption attends to itself
+    #   [0:cap, cap:]  = False  caption does NOT attend to sequence
+    #   [cap:,  0:cap] = True   sequence attends to caption
+    #   [cap:,  cap:]  = seq_mask
+    total = caption_len + L
+    full = torch.zeros(total, total, dtype=torch.bool, device=types.device)
+    full[:caption_len, :caption_len] = True
+    full[caption_len:, :caption_len] = True
+    full[caption_len:, caption_len:] = seq_mask
+    return full
 
 
 # ------------------------------ model -------------------------------------
@@ -104,32 +124,80 @@ class TransformerBlock(nn.Module):
 
 
 class ICONLM(nn.Module):
+    """ICON-LM transformer with optional caption prefix.
+
+    When caption_vocab_size > 0 the model supports a language caption
+    prepended to each prompt.  The caption is encoded as a sequence of
+    character-level token IDs; each ID is embedded and given a learned
+    positional encoding, then prepended to the physics token sequence.
+    The attention mask (built by build_mask with caption_len > 0) gives
+    caption tokens full self-attention but prevents them from attending
+    to physics tokens, while every physics token attends to all caption
+    tokens (prefix-attention, as in the paper).
+    """
+
     def __init__(self, d_model: int = 64, n_layers: int = 4,
-                 n_heads: int = 4, d_ff: int = 128, coord_dim: int = 3):
+                 n_heads: int = 4, d_ff: int = 128, coord_dim: int = 3,
+                 embed_dim: int = 0, max_demo_num: int = 8):
         super().__init__()
         self.type_embed = nn.Embedding(3, d_model)
         self.coord_proj = nn.Linear(coord_dim, d_model)
         self.value_proj = nn.Linear(1, d_model)
+        # Demo-index positional embedding: each token gets index 3*j + type_id
+        # (0=C, 1=U, 2=Q), matching the paper's func_pos_embedding scheme
+        # (models_utils.py:build_index_integer, models_lm.py:func_pos_embedding).
+        self.demo_pos_embed = nn.Embedding(max_demo_num * 3, d_model)
         self.blocks = nn.ModuleList(
             [TransformerBlock(d_model, n_heads, d_ff) for _ in range(n_layers)]
         )
         self.ln_f = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, 1)
 
-    def forward(self, types, coords, values, mask):
-        # types: [B, L] long; coords: [B, L, C]; values: [B, L, 1]; mask: [L, L]
+        # Sentence-embedding caption: a frozen encoder produces a [1, embed_dim]
+        # vector per caption; a single learned linear layer projects it to d_model.
+        # caption_len is always 1 (one token per caption).
+        self.embed_dim = embed_dim
+        if embed_dim > 0:
+            self.caption_proj = nn.Linear(embed_dim, d_model)
+
+    def forward(self, types, coords, values, mask, demo_idx=None,
+                caption_emb: "torch.Tensor | None" = None):
+        """
+        types:       [B, L] long
+        coords:      [B, L, coord_dim] float
+        values:      [B, L, 1] float
+        mask:        [L, L] or [1+L, 1+L] bool
+        demo_idx:    [L] long  —  3*j + type_id per token (paper's
+                     func_pos_embedding index).  If None, skipped.
+        caption_emb: [B, 1, embed_dim] float  —  pre-computed sentence
+                     embedding from a frozen encoder, projected to d_model
+                     and prepended as a single caption token.  If None,
+                     no caption is used and the mask must be [L, L].
+        """
         h = (self.type_embed(types)
              + self.coord_proj(coords)
              + self.value_proj(values))
+        if demo_idx is not None:
+            h = h + self.demo_pos_embed(demo_idx).unsqueeze(0)
+
+        if caption_emb is not None:
+            cap_h = self.caption_proj(caption_emb)   # [B, 1, d_model]
+            h = torch.cat([cap_h, h], dim=1)
+
         for blk in self.blocks:
             h = blk(h, mask)
         h = self.ln_f(h)
-        return self.head(h).squeeze(-1)  # [B, L]
+        out = self.head(h).squeeze(-1)  # [B, 1+L] or [B, L]
+
+        if caption_emb is not None:
+            out = out[:, 1:]  # drop the single caption output position
+        return out  # [B, L]
 
 
 # ------------------------------ smoke test --------------------------------
 
 if __name__ == "__main__":
+    EMBED_DIM = 384
     J, nC, nU, nQ = 3, 24, 24, 24
     L = J * (nC + nU + nQ)
     types = torch.zeros(L, dtype=torch.long)
@@ -140,27 +208,37 @@ if __name__ == "__main__":
         types[pos:pos + nU] = 1; examples[pos:pos + nU] = j; pos += nU
         types[pos:pos + nQ] = 2; examples[pos:pos + nQ] = j; pos += nQ
 
+    # sequence-only mask
     mask = build_mask(types, examples)
-    print("mask shape:", mask.shape, "fraction open:", mask.float().mean().item())
-
-    # Sanity: Q row should never attend to its own U block.
-    # First Q in example 0 is at index nC + nU = 48.
     q0 = nC + nU
-    u0_start, u0_end = nC, nC + nU
-    assert not mask[q0, u0_start:u0_end].any().item(), "leakage!"
-    # First Q should attend only to itself in own Q block.
-    q0_start = nC + nU
-    q0_end = nC + nU + nQ
-    q0_self = mask[q0, q0_start:q0_end]
+    assert not mask[q0, nC:nC+nU].any().item(), "leakage!"
+    q0_self = mask[q0, nC+nU:nC+nU+nQ]
     assert q0_self.sum().item() == 1 and q0_self[0].item(), "Q diagonal broken"
-    print("invariants OK")
+    print("sequence-only invariants OK")
 
-    model = ICONLM(d_model=64, n_layers=4, n_heads=4, d_ff=128, coord_dim=3)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"params: {n_params/1e3:.1f}K")
+    # caption-prefix mask (caption_len=1)
+    cmask = build_mask(types, examples, caption_len=1)
+    assert cmask[:1, :1].all().item(),     "cap-cap broken"
+    assert not cmask[:1, 1:].any().item(), "cap->seq leak"
+    assert cmask[1:, :1].all().item(),     "seq->cap broken"
+    print("caption-prefix (len=1) invariants OK")
+
+    # model smoke test
+    model = ICONLM(d_model=64, n_layers=2, n_heads=4, d_ff=128,
+                   coord_dim=2, embed_dim=EMBED_DIM, max_demo_num=J+1)
+    print(f"params: {sum(p.numel() for p in model.parameters())/1e3:.1f}K")
 
     B = 2
-    coords = torch.rand(B, L, 3)
+    coords = torch.rand(B, L, 2)
     values = torch.zeros(B, L, 1)
+
     out = model(types[None].expand(B, L), coords, values, mask)
-    print("output:", out.shape)
+    assert out.shape == (B, L), out.shape
+    print("no-caption output:", out.shape)
+
+    cap_emb = torch.randn(B, 1, EMBED_DIM)
+    out_cap = model(types[None].expand(B, L), coords, values, cmask,
+                    caption_emb=cap_emb)
+    assert out_cap.shape == (B, L), out_cap.shape
+    print("caption output:", out_cap.shape)
+    print("all smoke tests passed")

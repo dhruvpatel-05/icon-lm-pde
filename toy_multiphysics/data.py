@@ -1,252 +1,174 @@
 """
-Toy multi-regime 2D fluid-tracer data generator.
+1D viscous Burgers equation data generator for ICON-LM.
 
-Each hidden operator maps an initial dyed scalar field q(0, x, y) to several
-future snapshots q(t_1), ..., q(t_K) on the periodic square.  The toy PDE is
+Hidden operator: viscosity ν ∈ [ν_min, ν_max] (log-uniform).
+Each operator maps an initial condition u(x, 0) to a trajectory
+u(x, t_1 .. t_K) on the periodic domain [0, 2π].
 
-    q_t + u . grad(q) = kappa Delta q,      div(u) = 0,
-
-where the incompressible velocity u is generated from a hidden stream function.
-This is a lightweight fluid-prediction task with three hidden regimes:
-diffusion-dominated transport, shear advection, and vortical stirring. The
-ICON-LM model must infer the active regime/operator from a few demonstration
-trajectories.
+PDE:  u_t + u·u_x = ν·u_xx
+Solver: spectral (FFT) RHS with SciPy RK45.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from scipy.integrate import solve_ivp
 
 
-REGIME_NAMES = np.array(["diffusion", "shear", "vortical"])
+# ── grid / time defaults ───────────────────────────────────────────────────────
+N_GRID     = 64
+T_END      = 1.0
+NUM_FRAMES = 4
+NU_MIN     = 0.01
+NU_MAX     = 0.10
 
 
-def _grid(N: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    xs = (np.arange(N) + 0.5) / N
-    X, Y = np.meshgrid(xs, xs, indexing="ij")
-    return xs.astype(np.float32), X, Y
+# ── solver ─────────────────────────────────────────────────────────────────────
+
+def solve_burgers(nu: float, u0: np.ndarray, x: np.ndarray,
+                  t_eval: np.ndarray) -> np.ndarray:
+    """
+    Solve  u_t + u·u_x = ν·u_xx  on [0, 2π] periodic via spectral RHS + RK45.
+
+    Parameters
+    ----------
+    nu     : viscosity (float > 0)
+    u0     : initial condition, shape [N]
+    x      : uniform grid in [0, 2π), shape [N]
+    t_eval : output times (excluding t=0), shape [K]
+
+    Returns
+    -------
+    [K, N] float32 array of solutions at t_eval.
+    """
+    N = len(x)
+    k = np.fft.rfftfreq(N, d=1.0 / N)   # wavenumbers for [0, 2π] with N pts
+
+    def rhs(t, u):
+        u_hat = np.fft.rfft(u)
+        ux    = np.fft.irfft(1j * k * u_hat, n=N)
+        uxx   = np.fft.irfft(-(k ** 2) * u_hat, n=N)
+        return -u * ux + nu * uxx
+
+    sol = solve_ivp(rhs, [0.0, float(t_eval[-1])],
+                    u0.astype(np.float64),
+                    t_eval=t_eval.astype(np.float64),
+                    method='RK45', rtol=1e-6, atol=1e-8)
+    if not sol.success:
+        raise RuntimeError(f"solve_ivp failed for nu={nu}: {sol.message}")
+    return sol.y.T.astype(np.float32)   # [K, N]
 
 
-def _lowpass_filter(N: int, cutoff: float) -> np.ndarray:
-    m = np.fft.fftfreq(N, d=1.0 / N)
-    MX, MY = np.meshgrid(m, m, indexing="ij")
-    r = np.sqrt(MX**2 + MY**2)
-    filt = np.exp(-((r / cutoff) ** 4))
-    filt[0, 0] = 0.0
-    return filt
+def random_ic(x: np.ndarray, rng: np.random.Generator,
+              n_modes: int = 5) -> np.ndarray:
+    """Random superposition of Fourier modes as initial condition."""
+    u = np.zeros(len(x), dtype=np.float64)
+    for m in range(1, n_modes + 1):
+        a   = rng.uniform(-1.0, 1.0)
+        phi = rng.uniform(0.0, 2.0 * np.pi)
+        u  += a * np.sin(m * x + phi)
+    return (u / n_modes).astype(np.float32)
 
 
-def make_initial_fields(num_fields: int, N: int, rng: np.random.Generator,
-                        cutoff: float = 10.0) -> np.ndarray:
-    """Sample high-contrast dye fields with a vertical front and fine texture."""
-    _, X, Y = _grid(N)
-    out = np.zeros((num_fields, N, N), dtype=np.float32)
-    filt = _lowpass_filter(N, cutoff)
+# ── caption text pools ─────────────────────────────────────────────────────────
 
-    for i in range(num_fields):
-        phase1 = float(rng.uniform(0.0, 2.0 * np.pi))
-        phase2 = float(rng.uniform(0.0, 2.0 * np.pi))
-        front = 0.70 + 0.07 * np.sin(2.0 * np.pi * Y + phase1)
-        front += 0.035 * np.sin(4.0 * np.pi * Y + phase2)
-        base = 0.25 + 1.45 / (1.0 + np.exp(-(X - front) / 0.055))
-        base += 0.10 * np.sin(2.0 * np.pi * (X + 0.35 * Y) + phase1)
+_PRECISE = [
+    "Viscous Burgers equation: u_t + u*u_x = nu*u_xx, nu={nu:.5f}, periodic.",
+    "Burgers PDE with viscosity nu={nu:.5f}: u_t + u*u_x = nu*u_xx.",
+    "1D Burgers on [0,2pi] periodic: u_t + u*u_x = {nu:.5f}*u_xx.",
+    "Nonlinear advection-diffusion, Burgers form, viscosity nu={nu:.5f}.",
+    "u_t + u*u_x = nu*u_xx with nu={nu:.5f} on a periodic domain.",
+]
 
-        noise = rng.normal(size=(N, N))
-        texture = np.real(np.fft.ifft2(np.fft.fft2(noise) * filt))
-        texture /= texture.std() + 1e-6
-        q = base + 0.10 * texture
+# High ν (> 0.04): diffusion-dominated, smooth solutions.
+_VAGUE_HIGH = [
+    "A nonlinear wave equation with strong viscous damping.",
+    "A Burgers-type PDE in the diffusion-dominated regime.",
+    "A strongly smoothed nonlinear advection equation.",
+    "Burgers equation with high viscosity and smooth solutions.",
+    "A nonlinear PDE where diffusion dominates over advection.",
+]
 
-        for _ in range(4):
-            cx, cy = rng.uniform(0.0, 1.0, size=2)
-            sigma = float(rng.uniform(0.045, 0.10))
-            amp = float(rng.normal(0.0, 0.14))
-            dx = np.minimum(np.abs(X - cx), 1.0 - np.abs(X - cx))
-            dy = np.minimum(np.abs(Y - cy), 1.0 - np.abs(Y - cy))
-            q += amp * np.exp(-(dx**2 + dy**2) / (2.0 * sigma**2))
-
-        out[i] = np.clip(q, 0.12, 1.90).astype(np.float32)
-    return out
+# Low ν (≤ 0.04): advection-dominated, sharp gradients / near-shock.
+_VAGUE_LOW = [
+    "A nonlinear wave equation with weak viscosity and sharp gradients.",
+    "A Burgers-type PDE near the inviscid limit with shock formation.",
+    "A convection-dominated Burgers equation with thin shock layers.",
+    "Burgers equation at low viscosity with near-discontinuous solutions.",
+    "A nonlinear hyperbolic-like PDE with mild viscous regularization.",
+]
 
 
-def sample_operator(rng: np.random.Generator) -> tuple[int, float, float]:
-    """Draw one hidden physics regime: regime, diffusivity, velocity scale."""
-    regime = int(rng.integers(0, len(REGIME_NAMES)))
-    if regime == 0:
-        # Diffusion-dominated: almost no transport, stronger smoothing.
-        kappa = float(rng.uniform(7.0e-4, 1.5e-3))
-        speed = 0.0
-    elif regime == 1:
-        # Shear advection: coherent transport with weak diffusion.
-        kappa = float(rng.uniform(5.0e-5, 1.5e-4))
-        speed = float(rng.uniform(0.35, 0.55))
-    else:
-        # Vortical stirring: spatially complex incompressible flow.
-        kappa = float(rng.uniform(1.2e-4, 3.5e-4))
-        speed = float(rng.uniform(0.40, 0.70))
-    return regime, kappa, speed
+def make_caption(nu: float, precise: bool, rng: np.random.Generator) -> str:
+    """Return one caption string for a Burgers operator with viscosity nu."""
+    if precise:
+        tmpl = _PRECISE[int(rng.integers(len(_PRECISE)))]
+        return tmpl.format(nu=nu)
+    pool = _VAGUE_HIGH if nu > 0.04 else _VAGUE_LOW
+    return pool[int(rng.integers(len(pool)))]
 
 
-def make_velocity_field(N: int, rng: np.random.Generator,
-                        speed: float, regime: int) -> tuple[np.ndarray, np.ndarray]:
-    """Build a smooth incompressible velocity for the selected regime."""
-    _, X, Y = _grid(N)
+# ── dataset generation ─────────────────────────────────────────────────────────
 
-    if regime == 0:
-        z = np.zeros((N, N), dtype=np.float32)
-        return z, z
+def make_dataset(nu_values: np.ndarray, sources_per_op: int,
+                 N: int = N_GRID, seed: int = 0,
+                 num_frames: int = NUM_FRAMES,
+                 T: float = T_END) -> dict:
+    """
+    Generate a Burgers trajectory dataset.
 
-    psi = np.zeros((N, N), dtype=np.float64)
+    Returns a dict with keys:
+      c     [O, S, N]      initial conditions
+      u     [O, S, K, N]   solutions at K future times
+      nu    [O]            viscosity values (the hidden operator parameter)
+      grid  [N]            spatial grid in [0, 2π)
+      times [K]            evaluation times
+    """
+    rng    = np.random.default_rng(seed)
+    x      = np.linspace(0.0, 2.0 * np.pi, N, endpoint=False).astype(np.float32)
+    t_eval = np.linspace(T / num_frames, T, num_frames).astype(np.float32)
+    O      = len(nu_values)
 
-    if regime == 1:
-        phase1 = float(rng.uniform(0.0, 2.0 * np.pi))
-        phase2 = float(rng.uniform(0.0, 2.0 * np.pi))
-        psi += np.sin(2.0 * np.pi * Y + phase1)
-        psi += 0.35 * np.sin(4.0 * np.pi * Y + phase2)
-        psi += 0.10 * np.sin(2.0 * np.pi * X + phase1)
-    else:
-        for _ in range(10):
-            kx = int(rng.integers(1, 5))
-            ky = int(rng.integers(1, 5))
-            phase = float(rng.uniform(0.0, 2.0 * np.pi))
-            amp = float(rng.normal(0.0, 1.0) / (kx * kx + ky * ky))
-            psi += amp * np.sin(2.0 * np.pi * (kx * X + ky * Y) + phase)
+    c_all = np.zeros((O, sources_per_op, N),             dtype=np.float32)
+    u_all = np.zeros((O, sources_per_op, num_frames, N), dtype=np.float32)
 
-        for _ in range(5):
-            cx, cy = rng.uniform(0.0, 1.0, size=2)
-            sigma = float(rng.uniform(0.06, 0.14))
-            amp = float(rng.normal(0.0, 0.40))
-            dx = np.minimum(np.abs(X - cx), 1.0 - np.abs(X - cx))
-            dy = np.minimum(np.abs(Y - cy), 1.0 - np.abs(Y - cy))
-            psi += amp * np.exp(-(dx**2 + dy**2) / (2.0 * sigma**2))
+    for i, nu in enumerate(nu_values):
+        for s in range(sources_per_op):
+            u0       = random_ic(x, rng)
+            traj     = solve_burgers(float(nu), u0, x, t_eval)
+            c_all[i, s] = u0
+            u_all[i, s] = traj
+        if (i + 1) % 40 == 0 or i == 0:
+            print(f"  operator {i+1:3d}/{O}  nu={nu:.5f}")
 
-    k = 2.0 * np.pi * np.fft.fftfreq(N, d=1.0 / N)
-    KX, KY = np.meshgrid(k, k, indexing="ij")
-    psi_hat = np.fft.fft2(psi)
-    ux = np.real(np.fft.ifft2(1j * KY * psi_hat))
-    uy = np.real(np.fft.ifft2(-1j * KX * psi_hat))
-    rms = np.sqrt(np.mean(ux**2 + uy**2)) + 1e-8
-    ux = speed * ux / rms
-    uy = speed * uy / rms
-    return ux.astype(np.float32), uy.astype(np.float32)
-
-
-def _bilinear_periodic(field: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Sample a 2D field or batch of fields at periodic coordinates in [0, 1)."""
-    N = field.shape[-1]
-    xf = (x % 1.0) * N - 0.5
-    yf = (y % 1.0) * N - 0.5
-    i0 = np.floor(xf).astype(np.int64) % N
-    j0 = np.floor(yf).astype(np.int64) % N
-    i1 = (i0 + 1) % N
-    j1 = (j0 + 1) % N
-    wx = xf - np.floor(xf)
-    wy = yf - np.floor(yf)
-
-    f00 = field[..., i0, j0]
-    f10 = field[..., i1, j0]
-    f01 = field[..., i0, j1]
-    f11 = field[..., i1, j1]
-    return ((1.0 - wx) * (1.0 - wy) * f00
-            + wx * (1.0 - wy) * f10
-            + (1.0 - wx) * wy * f01
-            + wx * wy * f11)
-
-
-def _backtrace_map(ux: np.ndarray, uy: np.ndarray, t: float,
-                   substeps: int) -> tuple[np.ndarray, np.ndarray]:
-    """Backtrace grid points under a steady velocity field with RK2 steps."""
-    _, X, Y = _grid(ux.shape[0])
-    xb = X.astype(np.float64).copy()
-    yb = Y.astype(np.float64).copy()
-    dt = t / substeps
-    for _ in range(substeps):
-        u1 = _bilinear_periodic(ux, xb, yb)
-        v1 = _bilinear_periodic(uy, xb, yb)
-        xm = xb - 0.5 * dt * u1
-        ym = yb - 0.5 * dt * v1
-        u2 = _bilinear_periodic(ux, xm, ym)
-        v2 = _bilinear_periodic(uy, xm, ym)
-        xb = (xb - dt * u2) % 1.0
-        yb = (yb - dt * v2) % 1.0
-    return xb, yb
-
-
-def _diffuse(fields: np.ndarray, kappa: float, t: float) -> np.ndarray:
-    N = fields.shape[-1]
-    k = 2.0 * np.pi * np.fft.fftfreq(N, d=1.0 / N)
-    KX, KY = np.meshgrid(k, k, indexing="ij")
-    prop = np.exp(-kappa * (KX**2 + KY**2) * t)
-    return np.real(np.fft.ifft2(np.fft.fft2(fields, axes=(-2, -1)) * prop,
-                                axes=(-2, -1)))
-
-
-def evolve_tracer(q0: np.ndarray, ux: np.ndarray, uy: np.ndarray,
-                  kappa: float, times: np.ndarray) -> np.ndarray:
-    """Semi-Lagrangian advection plus spectral diffusion for a batch of fields."""
-    frames = []
-    for t in times:
-        substeps = max(8, int(np.ceil(float(t) / 0.025)))
-        xb, yb = _backtrace_map(ux, uy, float(t), substeps)
-        advected = _bilinear_periodic(q0, xb, yb)
-        smoothed = _diffuse(advected, kappa, float(t))
-        frames.append(np.clip(smoothed, 0.10, 1.95).astype(np.float32))
-    return np.stack(frames, axis=1)
-
-
-def make_dataset(num_operators: int, sources_per_operator: int, N: int,
-                 seed: int = 0, num_frames: int = 4,
-                 steps_per_frame: int = 8, dt: float = 0.02) -> dict:
-    """Generate the in-context swirly fluid-tracer dataset."""
-    rng = np.random.default_rng(seed)
-    times = (np.arange(1, num_frames + 1) * steps_per_frame * dt).astype(np.float32)
-    c_all = np.zeros((num_operators, sources_per_operator, N, N), dtype=np.float32)
-    u_all = np.zeros((num_operators, sources_per_operator, num_frames, N, N),
-                     dtype=np.float32)
-    regime_all = np.zeros(num_operators, dtype=np.int64)
-    kappa_all = np.zeros(num_operators, dtype=np.float32)
-    speed_all = np.zeros(num_operators, dtype=np.float32)
-
-    for i in range(num_operators):
-        regime, kappa, speed = sample_operator(rng)
-        ux, uy = make_velocity_field(N, rng, speed, regime)
-        q0 = make_initial_fields(sources_per_operator, N, rng)
-        traj = evolve_tracer(q0, ux, uy, kappa, times)
-        c_all[i] = q0
-        u_all[i] = traj
-        regime_all[i] = regime
-        kappa_all[i] = kappa
-        speed_all[i] = speed
-
-    grid = ((np.arange(N) + 0.5) / N).astype(np.float32)
-    return dict(c=c_all, u=u_all, regime=regime_all, nu=kappa_all,
-                speed=speed_all, times=times, grid=grid,
-                regime_names=REGIME_NAMES,
-                steps_per_frame=np.int64(steps_per_frame), dt=np.float32(dt))
+    return dict(c=c_all, u=u_all,
+                nu=nu_values.astype(np.float32),
+                grid=x, times=t_eval)
 
 
 if __name__ == "__main__":
-    import os
-
-    os.environ.setdefault("MPLCONFIGDIR", os.path.join(os.path.dirname(__file__),
-                                                       ".matplotlib"))
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    data = make_dataset(num_operators=2, sources_per_operator=2, N=64, seed=42)
-    print("q0", data["c"].shape, "trajectory", data["u"].shape)
-    print("regime", data["regime"], REGIME_NAMES[data["regime"]])
-    print("kappa", data["nu"], "speed", data["speed"], "times", data["times"])
+    rng  = np.random.default_rng(0)
+    x    = np.linspace(0, 2 * np.pi, N_GRID, endpoint=False)
+    tevl = np.linspace(T_END / NUM_FRAMES, T_END, NUM_FRAMES)
 
-    fig, axes = plt.subplots(2, 5, figsize=(9, 4))
-    for row in range(2):
-        fields = [data["c"][row, 0], *data["u"][row, 0]]
-        for col, field in enumerate(fields):
-            ax = axes[row, col]
-            ax.imshow(field, cmap="RdBu_r", origin="lower", vmin=0.15, vmax=1.85,
-                      interpolation="bicubic")
-            ax.set_title("t=0" if col == 0 else f"t={data['times'][col-1]:.2f}",
-                         fontsize=8)
-            ax.set_xticks([])
-            ax.set_yticks([])
-    fig.tight_layout()
-    fig.savefig("sanity.png", dpi=180)
-    print("wrote sanity.png")
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3))
+    for ax, nu in zip(axes, [0.01, 0.04, 0.10]):
+        u0   = random_ic(x, rng)
+        traj = solve_burgers(nu, u0, x, tevl)
+        ax.plot(x, u0, 'k--', lw=1, label='t=0')
+        for ki, t in enumerate(tevl):
+            ax.plot(x, traj[ki], label=f't={t:.2f}')
+        ax.set_title(f'ν={nu}')
+        ax.set_xlabel('x')
+        ax.legend(fontsize=7)
+    plt.tight_layout()
+    plt.savefig('burgers_sanity.png', dpi=120)
+    print("wrote burgers_sanity.png")
+
+    for precise in (True, False):
+        print(make_caption(0.012, precise, rng))
+        print(make_caption(0.08,  precise, rng))
