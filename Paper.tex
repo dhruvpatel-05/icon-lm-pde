@@ -1,19 +1,3 @@
-%==============================================================
-%  Technical Report: ICON-LM --- Fine-Tuning Language Models
-%  as Multi-Modal Differential Equation Solvers
-%
-%  Compile with:  pdflatex icon_lm_report.tex  (run twice)
-%
-%  Target structure (per course rubric, 40 pts total):
-%     Organization & Writing        ........... 8 pts
-%     Math/Scientific Formulation   ........... 8 pts
-%     Methodology & Technical Depth ........... 10 pts
-%     Results & Analysis            ........... 8 pts
-%     Professionalism & Presentation ........... 6 pts
-%
-%  11pt font, 1-in margins, ~3 pages/person body text.
-%==============================================================
-
 \documentclass[11pt]{article}
 
 \usepackage[margin=1in]{geometry}
@@ -26,587 +10,485 @@
 \usepackage{tikz}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.17}
-\usetikzlibrary{positioning,arrows.meta,calc,fit}
+\usetikzlibrary{positioning,arrows.meta,calc}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf,margin=0.5cm}
 \usepackage[round,authoryear]{natbib}
-\bibliographystyle{plainnat}
 \usepackage{hyperref}
+\usepackage{microtype}
 \hypersetup{colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue}
 
-%---------- light coloring for TikZ figures (matches slides) -
 \usepackage{xcolor}
 \definecolor{iconblue}{RGB}{30,72,116}
 \definecolor{iconaccent}{RGB}{198,108,42}
-\definecolor{iconlight}{RGB}{235,240,247}
+\definecolor{icongray}{RGB}{90,90,90}
 
-%---------- math shortcuts -----------------------------------
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\Tth}{T_{\!\theta}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
 \DeclareMathOperator{\bool}{bool}
 
+\IfFileExists{toy_multiphysics/metrics.tex}{\input{toy_multiphysics/metrics.tex}}{}
+\IfFileExists{toy_multiphysics/eval_metrics.tex}{\input{toy_multiphysics/eval_metrics.tex}}{}
+\providecommand{\ToyGrid}{64}
+\providecommand{\ToyFrames}{4}
+\providecommand{\ToyShots}{4}
+\providecommand{\ToyTrainTime}{$\sim\!30$~min}
+\providecommand{\ToyTestRel}{15.8\%}
+\providecommand{\ToyContextSummary}{0-shot 22.0\%, 3-shot 15.0\%}
+\providecommand{\ToyInverseAcc}{81.0\%}
+\providecommand{\ToyZeroShotImp}{16.4\%}
+
 \title{\vspace{-1.5em}
-  Fine-Tuning Language Models as Multi-Modal Differential Equation Solvers: An Analysis of the ICON-LM Framework}
+  ICON-LM for In-Context Viscous Burgers Solvers:\\
+  A Reproducible Implementation Study}
 
 \author{
-  [Presenter 1 Name] \and [Presenter 2 Name]\\
-  \small [Course Number]\,---\,Final Project Report\\
-  \small June 3, 2026
-}
-\author{
-  Aditya Patil,  Dhruv Patel  \\
+  Aditya Patil, Dhruv Patel\\
   \small MATH 270A Final Report\\
-  \small June 3, 2026
+  \small June 9, 2026
 }
-
 \date{}
 
 \begin{document}
 \maketitle
-\vspace{-2.5em}
+\vspace{-2em}
 
 %==============================================================
 \begin{abstract}
 \noindent
-In-context operator learning trains a neural network as an \emph{operator learner}: given a
-prompt of example condition--QoI pairs, it predicts the response of a new condition
-under the shared operator in a single forward pass, without weight updates.
-The recent ICON-LM framework of~\citet{yang2024icon_lm} extends this paradigm in two
-ways. First, it reshapes the architecture into a single transformer encoder with a
-custom attention mask, enabling \emph{next-function} prediction analogous to next-token
-prediction in language models. Second, it admits a \emph{caption}, a natural-language
-description of the operator, alongside the numerical prompt, producing a multi-modal
-operator learner. We review the mathematical and computational structure of ICON-LM,
-analyse the constraints satisfied by its attention mask, and discuss its reported
-performance against the encoder--decoder ICON baseline, classical operator
-learners (FNO, DeepONet), and an ablated variant using a randomly initialised GPT-2
-backbone. We close by discussing the tension between language pre-training and
-numerical few-shot competence revealed by the ablation, and what this suggests about
-foundation models for scientific machine learning.
+Operator learning asks a neural network to approximate maps between functions, such
+as the map from an initial condition to the solution of a partial differential equation (PDE). ICON-LM extends this idea by making the examples themselves a prompt. In it,
+a transformer reads several condition--solution pairs, an optional natural-language
+caption, and uses that to predict a new solution in a single forward pass. This report 
+summarizes the mathematical structure of ICON-LM and then documents our
+implementation of a smaller ICON-LM-style model used on the one-dimensional viscous
+Burgers equation. In our experiment, each operator is indexed by an unknown
+viscosity $\nu$, and the model must infer the appropriate dynamics from sparse
+trajectory examples and optional captions. The code generates spectral-solver data,
+builds the ICON-LM attention mask, trains a 2.21M-parameter transformer, and
+evaluates context scaling from zero to three in-context demonstrations. On the
+saved test set, no-caption relative error improves from $23\%$ at zero shots to
+$16\%$ at three shots, while captions help reduce the zero-shot error. These results
+support the intuition behind ICON-LM, but also demonstrate limitations such as how caption embeddings need very careful numerical handling, and that small models only weakly use exact parameter information.
 \end{abstract}
 
 %==============================================================
 \section{Introduction}
 \label{sec:intro}
 
-Many problems in computational science reduce to learning an \emph{operator}: a map
-$T : c \mapsto u$ taking one function (the condition) to another (the quantity of
-interest, QoI). Solving a partial differential equation can be cast this way, with
-the coefficient function as the condition and the solution as the QoI; inverse
-problems swap the two; control problems map cost and state to a control signal.
-Operator-learning approaches based on neural networks~\citep{chen1995universal,
-lu2021deeponet,li2021fourier,kovachki2023neural} have made it possible to amortise
-the cost of such mappings: once trained on data from a single operator, the network
-can evaluate that operator on new inputs with a forward pass.
+Many scientific computing problems can be written as operator-learning problems.
+Instead of predicting a scalar label from a vector input, the model predicts an
+entire function from another function. For a time-dependent PDE, the input might be
+an initial condition $u_0(x)$ and the output might be the future trajectory
+$u(x,t)$. Classical neural operator methods such as DeepONet and the Fourier
+Neural Operator learn this map after training on many examples from a fixed
+operator~\citep{lu2021deeponet,li2021fourier,kovachki2023neural}. They lower
+the cost of solving one PDE family, but a change in coefficients, boundary
+conditions, or physical parameters requires retraining or fine-tuning.
 
-The limitation of this paradigm is that each operator demands its own training run.
-A linear reaction--diffusion problem with one set of parameters requires a separately
-trained DeepONet from the same problem with different parameters. This is at odds
-with the broader trend in machine learning toward \emph{foundation
-models}~\citep{bommasani2021opportunities}, which absorb training cost once and
-deploy across many downstream tasks.
+In-Context Operator Networks (ICON) propose a different abstraction, where the neural
+network is trained not merely to approximate one operator, but to infer an
+operator from examples supplied at inference time~\citep{yang2023icon}. Given a
+prompt of condition--quantity-of-interest pairs
+$\{(c_j,u_j)\}_{j=1}^J$ and a new condition $c_{\rm q}$, the model predicts
+$u_{\rm q}$ without any gradient updates. This is directly analogous to in-context
+learning in language models~\citep{brown2020language}, just with functions replacing
+sentences and operators replacing tasks.
 
-\paragraph{In-context operator learning.}
-\citet{yang2023icon} proposed an alternative paradigm, In-Context Operator Networks
-(ICON), in which a single network is trained to be an \emph{operator learner}
-rather than an operator approximator. The network ingests a prompt of $J$ example
-condition--QoI pairs $\{(c_j, u_j)\}_{j=1}^J$ together with a question condition
-$c_{\text{q}}$, and outputs its prediction $\hat{u}_{\text{q}}$ in one forward pass.
-At inference, no weights are updated; the prompt itself encodes the operator.
-This is the operator-learning analogue of in-context learning in large language
-models~\citep{brown2020language}.
+ICON-LM strengthens this analogy~\citep{yang2024icon_lm}. It replaces the
+encoder--decoder ICON architecture with a single transformer encoder and a
+carefully designed attention mask, which makes the model behave like an
+autoregressive learner over functions. Earlier examples can inform later
+predictions, but the answer tokens for a current example can't leak into that
+example's query tokens. ICON-LM also adds an optional caption modality, allowing the prompt
+to contain natural language text such as the governing equation or numerical parameter values.
 
-\paragraph{The gap.}
-ICON, as originally formulated, operates only on numerical data. Yet practitioners
-typically know things about an operator that no example pair can convey: that the
-system obeys a particular conservation law, that the equation has a known form even
-if its parameters do not, or that boundary conditions take a specific value. The
-two standard ways of injecting such knowledge into a learning system---hard
-architectural constraints~\citep{ling2016reynolds,zhang2018deep} and soft
-penalties in the loss (the PINN family~\citep{raissi2019pinn,karniadakis2021pinn})---are
-both ill-suited to the in-context paradigm, because they are designed around a
-single, fixed operator and a single, fixed network.
+Our project has two parts. First, we analyzed the ICON-LM formulation, as it's
+the conceptual basis for our work. Second, we implemented a compact, reproducible
+version for a single PDE family, the 1-dimensional
+viscous Burgers Equation. The implementation is deliberately smaller than the
+paper model, but it still utilizes the governing PDE, a numerical data generator, function tokenization, the
+ICON-LM mask, next-function training, caption conditioning, and quantitative
+evaluation.
 
-\paragraph{The ICON-LM proposal.}
-\citet{yang2024icon_lm} address this gap by introducing two ideas.
-\begin{enumerate}\setlength\itemsep{0pt}
-\item A \emph{caption}: a textual description of the operator, in natural language or
-       \LaTeX, which the network reads alongside the numerical prompt. The model
-       thus becomes multi-modal.
-\item A reformulation of the architecture into a single transformer encoder with a
-       custom attention mask, trained autoregressively across all $J$ at once. The
-       authors call this \emph{next-function prediction}, by analogy with next-token
-       prediction in language models. The same architecture admits a pre-trained
-       LLM (GPT-2) as a starting point.
-\end{enumerate}
-This report reviews ICON-LM and analyses its design choices. Section~\ref{sec:formulation}
-makes the operator-learning problem and its multi-modal extension precise.
-Section~\ref{sec:methodology} works through the architecture, with particular care
-given to the attention mask, which is the technical centrepiece of the paper.
-Section~\ref{sec:results} reviews the reported empirical results. Section~\ref{sec:discussion}
-discusses limitations, an interesting ablation regarding language pre-training,
-and what this work suggests for foundation models in scientific machine learning.
+\paragraph{Code availability:} 
+The code implementation used for this report is available at \\
+\href{https://github.com/dhruvpatel-05/270A-finalproject}{https://github.com/dhruvpatel-05/270A-finalproject}.
 
 %==============================================================
-\section{Mathematical Formulation}
+\section{Mathematical and Scientific Formulation}
 \label{sec:formulation}
 
-\subsection{The operator and its examples}
-Let $\Omega \subset \R^d$ be a spatial domain (possibly with a time axis appended).
-Fix function spaces $\mathcal{C}$ for conditions and $\mathcal{U}$ for QoIs. An
-\emph{operator} is a map $T : \mathcal{C} \to \mathcal{U}$. We never have access to
-$c \in \mathcal{C}$ or $u = T(c) \in \mathcal{U}$ analytically; instead, we have a
-finite set of \emph{key--value samples}
-\begin{equation}
-\bigl\{(x_k, c(x_k))\bigr\}_{k=1}^{n} \quad\text{and}\quad
-\bigl\{(y_\ell, u(y_\ell))\bigr\}_{\ell=1}^{m},
-\label{eq:samples}
-\end{equation}
-where $x_k, y_\ell \in \Omega$ are evaluation points. The keys $x_k, y_\ell$ are
-unordered; only the set of pairs is meaningful.
+\subsection{In-Context Operator Learning}
 
-Within a single family of operators, parameters $\bm{\alpha}$ index the elements of
-the family: $T_{\bm{\alpha}}$. For Forward ODE~1 in the benchmark, for example,
+Let $\mathcal{C}$ and $\mathcal{U}$ be spaces of input and output functions. An
+operator is a map
 \begin{equation}
-\frac{du}{dt} = a_1\,c(t) + a_2, \quad t \in [0,1],\qquad
-\bm{\alpha} = (a_1, a_2, u(0)).
-\label{eq:ode1}
+T:\mathcal{C}\to\mathcal{U}, \qquad c\mapsto u=T(c).
 \end{equation}
-The benchmark used in~\citet{yang2024icon_lm} contains 19 such families: linear and
-nonlinear ODEs (forward and inverse), Poisson and reaction--diffusion PDEs, and
-mean-field control problems. The training set provides $1{,}000$ operators per family
-with $100$ pairs each; the test set provides $100$ unseen operators per family.
-
-\subsection{The in-context formulation}
-Given a prompt of $J$ example pairs and a question condition,
-\[
-P_J \;=\; \Bigl(\bigl\{(c_j, u_j)\bigr\}_{j=1}^{J},\; c_{\text{q}}\Bigr),
-\]
-the in-context learner is a function $\Tth$ mapping $P_J$ to a prediction
-$\hat{u}_{\text{q}} \in \mathcal{U}$. Crucially, the same $\theta$ must work for all
-families in the benchmark and all values of $J$. The training objective is the
-expected mean squared error over operators, prompts, and evaluation points:
+In a standard operator-learning setup, a model is trained for one fixed $T$. In an
+in-context setup, there is a distribution $\mathcal{D}$ over operators. At
+inference, the model receives a prompt
 \begin{equation}
-\mathcal{L}(\theta)
-\;=\;
-\E_{T \sim \mathcal{D}}\,
-\E_{P_J,\,y \sim T}\,
-\bigl\lVert \Tth(P_J)(y) \;-\; T(c_{\text{q}})(y) \bigr\rVert^2,
-\label{eq:objective}
+P_J=\left(\{(c_j,u_j)\}_{j=1}^{J},c_{\rm q}\right),
 \end{equation}
-with $\mathcal{D}$ the distribution over operator families and their parameters.
-Equation~\eqref{eq:objective} is a meta-learning loss: the network is rewarded for
-learning to extract $T$ from the prompt, not for any single $T$.
-
-\subsection{Multi-modal extension}
-Let $\kappa \in \Sigma^\ast$ be a \emph{caption}: a string drawn from a fixed
-vocabulary $\Sigma$. The multi-modal prompt is $P_J^\kappa = (\kappa, P_J)$, and the
-multi-modal learner is $\Tth : P_J^\kappa \mapsto \hat{u}_{\text{q}}$. Captions in
-the benchmark fall into two categories. \emph{Vague} captions disclose the form of
-the equation but not its parameters, e.g.\
-\textit{``An ODE with state $u(t)$ and control $c(t)$, $du/dt = a_1\,c(t)+a_2$.''}
-\emph{Precise} captions disclose the parameter values:
-\textit{``$du/dt = 0.0014\,c(t) + 0.0021$.''} For functional parameters (the
-terminal cost $g$ in the mean-field control problems), discretised values are
-listed inline.
-
-When $\kappa$ is precise, the operator is in principle determined by the caption
-alone; zero-shot learning ($J=0$) becomes meaningful. The training loss for the
-multi-modal model accordingly aggregates the loss with and without the caption:
+where all pairs are generated by the same but unknown operator $T\sim\mathcal{D}$.
+The learned model $\Tth$ produces $\hat u_{\rm q}=\Tth(P_J)$. A natural meta-loss is
 \begin{equation}
-\mathcal{L}_{\text{multi}}(\theta)
-\;=\;
-\mathcal{L}_{\text{with cap.}}(\theta) \;+\; \mathcal{L}_{\text{no cap.}}(\theta),
-\label{eq:multi_loss}
+\mathcal{L}(\theta)=
+\E_{T\sim\mathcal{D}}\,
+\E_{P_J}\,
+\E_{y}
+\left[
+  \left|\Tth(P_J)(y)-T(c_{\rm q})(y)\right|^2
+\right],
+\label{eq:meta_loss}
 \end{equation}
-where the no-caption term excludes $J=0$ (predicting a function from nothing is
-not well defined).
+where $y$ is an evaluation point for the output function. The important distinction
+is that $T$ is not encoded in $\theta$ alone, as it must be inferred from the prompt.
+
+The multi-modal extension adds a caption $\kappa$, so the model becomes
+$\Tth(\kappa,P_J)$. In the ICON-LM paper, vague captions describe the equation
+class while precise captions include parameter values~\citep{yang2024icon_lm}. In
+our experiment, precise captions include the Burgers viscosity, while vague
+captions state only whether the flow is low-viscosity and sharp or high-viscosity
+and smooth.
+
+\subsection{Burgers Operator Family}
+
+The implemented scientific system is the one-dimensional viscous Burgers equation
+on the periodic domain $[0,2\pi)$:
+\begin{equation}
+u_t + u u_x = \nu u_{xx}, \qquad x\in[0,2\pi),\quad t\in[0,1].
+\label{eq:burgers}
+\end{equation}
+The hidden operator parameter is the viscosity
+\begin{equation}
+\nu \in [10^{-2},10^{-1}].
+\end{equation}
+For each fixed $\nu$, the operator maps an initial condition to a future
+trajectory,
+\begin{equation}
+T_{\nu}: u_0(x)\mapsto \left(u(x,t_1),\ldots,u(x,t_K)\right),
+\qquad t_k\in\{0.25,0.50,0.75,1.00\}.
+\end{equation}
+Low viscosity produces sharper gradients and more advection-dominated behavior;
+high viscosity damps high-frequency content and gives smoother solutions. This
+makes the family scientifically meaningful while still small enough to train
+locally.
+
+For our initial conditions, we use random Fourier sums:
+\begin{equation}
+u_0(x)=\frac{1}{5}\sum_{m=1}^{5} a_m\sin(mx+\phi_m),
+\qquad
+a_m\sim{\rm Unif}[-1,1],\quad
+\phi_m\sim{\rm Unif}[0,2\pi].
+\label{eq:ic}
+\end{equation}
+The data generator uses $N=64$ uniform grid points and solves
+Equation~\eqref{eq:burgers} with a Fourier spectral right-hand side and SciPy
+\texttt{RK45} time stepping. Spatial derivatives are computed in Fourier space:
+\begin{equation}
+\widehat{u_x}_k = i k \hat u_k,
+\qquad
+\widehat{u_{xx}}_k = -k^2 \hat u_k.
+\end{equation}
+The saved dataset contains $200$ training viscosities on a log-spaced grid and
+$40$ held-out viscosities sampled log-uniformly, with $8$ initial conditions per
+viscosity.
+
+\subsection{Evaluation Metrics}
+
+For trajectory prediction, we report relative $L_2$ error over all query tokens:
+\begin{equation}
+{\rm RelErr} =
+100\left(
+\frac{\sum_{b,q} \left(\hat u_{bq}-u_{bq}\right)^2}
+     {\sum_{b,q} u_{bq}^2}
+\right)^{1/2}.
+\label{eq:relerr}
+\end{equation}
+This is computed after undoing training normalization. We also
+include a diagnostic inverse task, where a nearest-centroid classifier estimates which
+log-viscosity bin generated a trajectory. That inverse classifier isn't the
+ICON-LM model, but serves as a check that the dataset contains physically recoverable
+information about $\nu$.
 
 %==============================================================
-\section{Methodology}
+\section{Methodology and Implementation}
 \label{sec:methodology}
 
-\subsection{Tokens and embeddings}
-\label{sec:tokens}
-Each numerical function point is a token. For a one-dimensional spatio-temporal
-problem, a token has the schematic form
+\subsection{Function Tokens}
+
+The original ICON-LM represents scattered function samples as tokens. Our
+implementation follows that principle with three token types for each trajectory:
+condition tokens $C$, observed future-solution tokens $U$, and query tokens $Q$.
+Each token has the form
 \begin{equation}
-\mathrm{tok} = \bigl(\underbrace{\sigma}_{\text{term}},\; \underbrace{t}_{\text{time}},\;
-\underbrace{x}_{\text{space}};\; \underbrace{v}_{\text{value}}\bigr),
-\label{eq:tok}
+(\tau,x,t;v),
 \end{equation}
-where $\sigma$ is an integer indicator distinguishing multiple terms inside a
-condition or QoI (for instance, separating the control $c(t)$ from the initial
-condition $u(0)$ in the ODE case), and $v$ is either $c$ or $u$ at the location
-$(t,x)$. The triple $(\sigma, t, x)$ is the \emph{key}; $v$ is the \emph{value}.
+where $\tau\in\{C,U,Q\}$ is the token type, $(x,t)$ is the coordinate, and $v$ is
+the scalar value supplied to the transformer.
 
-For each example $j$ we use three token types: condition tokens, QoI tokens, and
-\emph{query tokens}. Query tokens carry only the keys at which we want to evaluate
-the QoI; their values are set to zero. They are how the model receives the question
-of \emph{where to predict}.
+For each source trajectory, the condition block contains $n_C=32$ sparse samples
+of the initial condition at $t=0$:
+\begin{equation}
+C_j = \{(C,x_i,0;u_{0,j}(x_i))\}_{i=1}^{32}.
+\end{equation}
+The solution block contains $32$ spatial samples at each of the four future times,
+yielding $128$ observed future tokens:
+\begin{equation}
+U_j = \{(U,x_i,t_k;u_j(x_i,t_k))\}_{i,k}.
+\end{equation}
+The query block has the same future coordinates, but its input value is the local
+initial condition value rather than the target future value:
+\begin{equation}
+Q_j = \{(Q,x_i,t_k;u_{0,j}(x_i))\}_{i,k},
+\qquad
+\text{target } u_j(x_i,t_k).
+\end{equation}
+Thus the model is told where to predict and what the initial condition is at that
+location, but it is never given the future answer for a current query token.
 
-A shared linear (or shallow MLP) embedding maps function tokens to vectors of width
-$d$; a separate embedding maps caption sub-word tokens to the same width. Positional
-encoding is added per type, with a critical constraint: \emph{all tokens of the same
-type within the same function share the same positional encoding}. With $J$
-condition--QoI pairs there are therefore $3J$ learnable positional vectors
-(condition, QoI, query) regardless of how many tokens make up each function. This
-choice is what enforces token-permutation invariance within a function---a
-property that any sensible function representation must satisfy.
+\subsection{Attention Mask}
 
-\subsection{Architecture and attention mask}
-\label{sec:mask}
-The transformer is a standard encoder stack; the novelty is the attention mask.
-Five constraints must hold simultaneously:
-\begin{enumerate}\setlength\itemsep{1pt}
-\item \emph{Causal context.} When predicting $u_j$, the model may attend to the
-       caption, all tokens of earlier examples, the condition tokens of the
-       current example, and the query token being predicted.
-\item \emph{No QoI leakage.} The QoI tokens of example $j$ must not be visible to
-       the query tokens of example $j$, since the QoI \emph{is} the answer.
-\item \emph{Query independence.} Query tokens within an example must not attend
-       to each other; their predictions must be independent.
-\item \emph{Permutation symmetry.} Within a function (condition, QoI, or query),
-       attention must be symmetric across token order.
-\item \emph{No indirect leakage.} If we write the mask as a Boolean matrix $M$,
-       it must satisfy $\bool(M\cdot M) = M$, ensuring two-hop reachability gives
-       no information forbidden by one-hop.
-\end{enumerate}
-The fifth constraint deserves a brief explanation. Suppose query token $q$ is
-masked from attending to QoI token $u$, but $q$ may attend to some intermediary
-$z$, and $z$ may attend to $u$. Then over two layers of self-attention, information
-from $u$ reaches $q$ via $z$. The check $\bool(M\cdot M) = M$ verifies that no such
-indirect path exists.
+The core technical device is the ICON-LM attention mask. Let token $a$ be the row
+token asking for information and token $b$ be the column token being attended to.
+Let $e(a)$ be the example index and $\tau(a)$ be the type. In our no-caption mask,
+attention is allowed when any one of the following holds:
+\begin{align}
+e(b)<e(a) &\quad\text{and}\quad \tau(b)\in\{C,U\}, \\
+e(b)=e(a),\ \tau(a)=C &\quad\text{and}\quad \tau(b)=C, \\
+e(b)=e(a),\ \tau(a)=U &\quad\text{and}\quad \tau(b)\in\{C,U\}, \\
+e(b)=e(a),\ \tau(a)=Q &\quad\text{and}\quad \tau(b)=C, \\
+a=b,\ \tau(a)=Q. &&
+\end{align}
+This gives the exact behavior needed for next-function prediction. Query tokens
+can use earlier condition--solution examples and the current condition, but can't
+see the current solution tokens $U_j$. Query tokens also cannot attend to other
+query tokens, so predictions at different coordinates do not communicate through
+hidden answer-dependent channels. As in the ICON-LM paper, this prevents both
+direct leakage and multi-layer indirect leakage.
 
-The mask satisfying all five constraints, illustrated schematically in
-Figure~\ref{fig:mask}, has the following block structure. The caption block is
-lower-triangular, mirroring a standard causal LM. Condition--condition blocks are
-fully open across previous examples and rectangular (not triangular) to preserve
-permutation symmetry. QoI tokens are visible \emph{within} an example but hidden
-from query tokens \emph{of that same example}, which is what creates the row--column
-asymmetry in the figure. Query blocks are diagonal: each query attends to itself
-only, not to its neighbours.
+Figure~\ref{fig:mask} shows the full captioned mask used to explain this rule. The actual code constructs the corresponding Boolean matrix and includes tests to check that current-query tokens
+can't attend to current-solution tokens and that query-query attention is
+diagonal.
 
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[scale=0.55,transform shape]
-  % grid: rows top-to-bottom = CAP, C1, U1, Q1, C2, U2, Q2, C3, U3, Q3
-  \foreach \i in {0,...,9}{
-    \foreach \j in {0,...,9}{
-      \fill[gray!25] (\j,-\i) rectangle ++(1,-1);
-    }
-  }
-  \fill[white] (0,0) rectangle ++(1,-1);
-  \foreach \j in {0,1}{\fill[white] (\j,-1) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2}{\fill[white] (\j,-2) rectangle ++(1,-1);}
-  \foreach \j in {0,1,3}{\fill[white] (\j,-3) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2,4}{\fill[white] (\j,-4) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2,4,5}{\fill[white] (\j,-5) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2,4,6}{\fill[white] (\j,-6) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2,4,5,7}{\fill[white] (\j,-7) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2,4,5,7,8}{\fill[white] (\j,-8) rectangle ++(1,-1);}
-  \foreach \j in {0,1,2,4,5,7,9}{\fill[white] (\j,-9) rectangle ++(1,-1);}
-  \draw[step=1,gray!60,thin] (0,0) grid (10,-10);
-  \foreach \j/\lbl in {0/CAP,1/C_1,2/U_1,3/Q_1,4/C_2,5/U_2,6/Q_2,7/C_3,8/U_3,9/Q_3}{
-    \node[font=\tiny,anchor=south] at (\j+0.5,0.1) {$\lbl$};
-  }
-  \foreach \i/\lbl in {0/CAP,1/C_1,2/U_1,3/Q_1,4/C_2,5/U_2,6/Q_2,7/C_3,8/U_3,9/Q_3}{
-    \node[font=\tiny,anchor=east] at (-0.1,-\i-0.5) {$\lbl$};
-  }
-\end{tikzpicture}
-\caption{The custom attention mask for an instance with three condition--QoI pairs.
-Rows are queries (``who is asking''); columns are keys (``who is asked''). White
-cells are open; grey cells are masked. The lower-triangular CAP block respects
-the language-modelling causal structure; the diagonal $Q_j$--$Q_j$ blocks enforce
-query independence; the asymmetry between $U_j$ and $Q_j$ rows enforces no QoI
-leakage. Adapted from~\citet[Fig.~3]{yang2024icon_lm}.}
+\IfFileExists{mask.png}{%
+  \includegraphics[width=0.98\textwidth]{mask.png}%
+}{%
+  \fbox{\parbox{0.92\textwidth}{\centering Upload \texttt{mask.png} to render
+  the captioned attention-mask figure.}}%
+}
+\caption{Captioned ICON-LM attention mask. Rows are querying tokens and columns
+are attended tokens. The caption block is causal (Previous condition/QoI tokens
+are visible to later examples), and each query token can see the caption, previous
+examples, the current condition, and itself, but not the current QoI answer.}
 \label{fig:mask}
 \end{figure}
 
-\subsection{Next-function prediction}
-The training scheme is the in-context analogue of next-token prediction. From
-a single prompt with $I$ example pairs, the loss is summed over all prefixes:
-\begin{equation}
-\mathcal{L}_{\text{prompt}}(\theta)
-\;=\;
-\sum_{J=0}^{I-1}
-\bigl\lVert
-\Tth\!\left[c_{J+1};\,\{(c_j, u_j)\}_{j=1}^{J}\right]\;-\;u_{J+1}
-\bigr\rVert^2,
-\label{eq:nfp}
-\end{equation}
-where the term $J=0$ is only included when a caption is provided. Each prompt
-instance thus trains zero-shot, one-shot, two-shot, \dots\ learning behaviour
-simultaneously. Compared with the original encoder--decoder ICON
-of~\citet{yang2023icon}, which sees one prediction per prompt instance, this scheme
-gives the model a denser learning signal at the same data cost.
+\subsection{Model and Captions}
 
-\subsection{Inference}
-At test time the user supplies $J$ example pairs and a question condition $c_{\text{q}}$.
-The model assembles the token sequence
-$\bigl[\,\kappa,\, C_1, U_1, Q_1,\, \dots,\, C_J, U_J, Q_J,\, C_{\text{q}}, Q_{\text{q}}\,\bigr]$,
-where $Q_{\text{q}}$ contains the keys at which $\hat{u}_{\text{q}}$ is wanted. A
-single forward pass returns the predictions at the query positions. Because the
-mask permits arbitrary query counts, the model can evaluate the QoI on any grid
-the user provides; the authors observe that a model trained on prompts of 41--50
-tokens per function generalises to prompts of 101 tokens without fine-tuning, by
-virtue of the transformer's flexible sequence length.
-
-\subsection{Configuration used in the paper}
-Table~\ref{tab:config} summarises the configurations. The single-modal ICON-LM uses
-a 6-layer, 8-head transformer with $d=256$ (about 15.8M parameters), trained with
-AdamW for $10^6$ steps with a warmup--cosine schedule peaking at $10^{-4}$. The
-multi-modal variant fine-tunes the 124M-parameter GPT-2 with the same schedule but
-a smaller batch (10 vs.\ 24), with the function-data embedding and output head
-replaced by shallow MLPs. The multi-modal training takes approximately $5.5$ days
-on two NVIDIA RTX 4090s.
+The model is a pre-layer-norm transformer encoder written in PyTorch. Each token
+embedding is the sum of a type embedding, a linear projection of $(x,t)$, a linear
+projection of the scalar value, and a learned demonstration-position embedding
+$3j+\tau$. The saved configuration is summarized in Table~\ref{tab:impl_config}.
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{lcc}
+\begin{tabular}{ll}
 \toprule
- & ICON-LM (single-modal) & ICON-LM \emph{w/} GPT-2 (multi-modal) \\
+Component & Value in saved run \\
 \midrule
-Layers / heads             & $6$ / $8$           & $12$ / $12$ (GPT-2) \\
-Width $d$                  & $256$               & $768$ (GPT-2) \\
-Parameters                 & $\approx 15.8$M     & $\approx 124$M \\
-Tokens/function in training & $41$--$50$         & $41$--$50$ \\
-Batch size                 & $24$                & $10$ \\
-Training steps             & $10^6$              & $10^6$ \\
-Hardware (paper)           & 1$\times$ RTX 4090  & 2$\times$ RTX 4090 \\
-Wall-clock training time   & $\approx 37.5$ h    & $\approx 5.5$ days \\
+PDE grid and times & $N=64$, $K=4$, $t=(0.25,0.50,0.75,1.00)$ \\
+Training/test operators & $200$ train viscosities, $40$ held-out viscosities \\
+Sources per operator & $8$ initial conditions \\
+Prompt layout & $4$ training examples, $32$ condition samples, $128$ future samples \\
+Transformer & $d=256$, $4$ layers, $8$ heads, feed-forward width $512$ \\
+Parameters & $2.21$M \\
+Optimizer & AdamW, learning rate $3\times10^{-4}$, cosine decay, gradient clip $1.0$ \\
+Caption use during training & $60\%$ caption batches; half precise, half vague \\
+Saved evaluation & Relative $L_2$ on held-out viscosities and initial conditions \\
 \bottomrule
 \end{tabular}
-\caption{Configuration of the two ICON-LM variants studied in~\citet{yang2024icon_lm}.}
-\label{tab:config}
+\caption{Implementation details.}
+\label{tab:impl_config}
 \end{table}
 
+Captions are represented differently from the full ICON-LM paper. Instead of
+fine-tuning GPT-2, the code uses a frozen MiniLM sentence
+encoder~\citep{reimers2019sentence} to embed one caption string into a vector. That
+vector is projected to the transformer width and prepended as a single prefix
+token. Caption attention is prefix-style, so the physics tokens attend to the caption
+token, while the caption token doesn't attend back to the physics sequence.
+
+The precise caption includes text such as
+\emph{``Burgers PDE with viscosity nu=0.02500''}. However, in practice, sentence embeddings
+are weak at distinguishing nearby numeric strings. Vague captions only indicate the physical regime, for example ``strong viscous
+damping'' or ``weak viscosity and sharp gradients.''
+
+\subsection{Training Objective}
+
+Training uses the ICON-LM next-function idea. A batch samples one viscosity and
+four source trajectories for each prompt. For every example $j$, the query block
+tries to reconstruct the corresponding future solution. With a caption, the first
+example is included in the loss, so zero-shot behavior is trained. Without a
+caption, the first example is excluded as the model has neither prior examples
+nor an operator description. In normalized units, the loss equation is
+\begin{equation}
+\mathcal{L}_{\rm prompt}(\theta)=
+\frac{1}{|\mathcal{Q}|}
+\sum_{j\in\mathcal{J}_{\rm loss}}
+\sum_{(x,t)\in Q_j}
+\left(
+\hat u_{\theta,j}(x,t)-u_j(x,t)
+\right)^2,
+\label{eq:toy_loss}
+\end{equation}
+where $\mathcal{J}_{\rm loss}=\{1,2,3,4\}$ for prompts with captions and
+$\mathcal{J}_{\rm loss}=\{2,3,4\}$ for prompts without captions.
+
+At test time, the evaluation script builds prompts with $J_{\rm demo}$ completed
+demonstration trajectories and one final query trajectory. We evaluate
+$J_{\rm demo}\in\{0,1,2,3\}$ because this keeps the final query at demonstration
+positions that were directly trained as targets.
+
 %==============================================================
-\section{Results}
+\section{Results and Analysis}
 \label{sec:results}
 
-\subsection{Single-modal: ICON-LM vs.\ encoder--decoder ICON}
-The first comparison isolates the effect of the architectural change.
-\citet{yang2024icon_lm} report the average relative error across all 19 problem
-families, from one-shot to five-shot, with mean and standard deviation over three
-training seeds. ICON-LM is lower at every $J$, with the gap roughly constant across
-shot counts (Figure~\ref{fig:vs_icon}).
+\subsection{Forward Prediction and Context Scaling}
 
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}
-\begin{axis}[
-  width=8.4cm,height=5.4cm,
-  xlabel={number of examples $J$}, ylabel={relative error},
-  xmin=0.5,xmax=5.5,ymin=0.01,ymax=0.035,
-  xtick={1,2,3,4,5},
-  tick label style={font=\small},
-  legend style={font=\small,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
-  grid=both,grid style={gray!20}
-]
-  \addplot[color=iconblue,thick,mark=*] coordinates {(1,0.0265)(2,0.0205)(3,0.0185)(4,0.0170)(5,0.0162)};
-  \addplot[color=iconaccent,thick,mark=square*] coordinates {(1,0.0305)(2,0.0240)(3,0.0215)(4,0.0205)(5,0.0198)};
-  \legend{ICON-LM, Encoder--Decoder ICON}
-\end{axis}
-\end{tikzpicture}
-\caption{Average relative testing error over 19 problem families, single-modal
-setting. Values follow~\citet[Fig.~4]{yang2024icon_lm}. ICON-LM achieves lower error
-at every $J$ despite having roughly half the parameters of the encoder--decoder
-baseline ($15.8$M vs.\ $31.6$M).}
-\label{fig:vs_icon}
-\end{figure}
-
-Two factors contribute. First, the next-function prediction loss
-(\,equation~\ref{eq:nfp}\,) extracts $I$ gradient contributions per prompt instead
-of one. Second, the single-encoder design removes the parameter redundancy in
-maintaining a separate encoder and decoder of comparable size. The training time is
-also reduced: $37.5$ hours for ICON-LM against $41.5$ hours for the
-encoder--decoder baseline.
-
-\subsection{ICON-LM vs.\ classical operator learning}
-A more striking comparison places ICON-LM against FNO~\citep{li2021fourier} and
-DeepONet~\citep{lu2021deeponet}, the classical operator-learning baselines, on the
-inverse nonlinear reaction--diffusion problem (\#14). The classical models are
-first pre-trained to approximate the \emph{mean} operator of the family, then
-fine-tuned on the five examples available for each test operator. ICON-LM, by
-contrast, processes the same five examples in one forward pass without any
-fine-tuning.
-
-The reported result is that the fine-tuned baselines work well for test operators
-close to the family mean and degrade markedly for operators far from it
-(\citet[Figs.~6b,6c]{yang2024icon_lm}). ICON-LM is approximately flat across the
-distribution, and its single-pass error is lower than the asymptotic error of
-both fine-tuned baselines after $\sim 200$ steps (Figure~\ref{fig:vs_classic}).
-This is the empirical signature of in-context learning: a model trained on a
-distribution of operators can specialise at inference, whereas a model trained on
-the mean cannot.
-
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}
-\begin{axis}[
-  width=8.4cm,height=5.4cm,
-  xlabel={fine-tuning steps},ylabel={relative error},
-  xmin=0,xmax=200,ymin=0,ymax=0.30,
-  tick label style={font=\small},
-  legend style={font=\small,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
-  grid=both,grid style={gray!20}
-]
-  \addplot[color=iconblue,thick,domain=0:200,samples=30] {0.25*exp(-0.01*x)+0.06};
-  \addplot[color=iconaccent,thick,domain=0:200,samples=30] {0.28*exp(-0.012*x)+0.08};
-  \addplot[color=black,thick,dashed,domain=0:200] {0.025};
-  \legend{FNO (fine-tune), DeepONet (fine-tune), ICON-LM (no fine-tune)}
-\end{axis}
-\end{tikzpicture}
-\caption{Relative error for Problem~\#14 (inverse nonlinear reaction--diffusion),
-averaged over 500 test cases. Trends follow~\citet[Fig.~6a]{yang2024icon_lm}.
-ICON-LM with a single forward pass outperforms FNO and DeepONet
-fine-tuned for each operator.}
-\label{fig:vs_classic}
-\end{figure}
-
-\subsection{Multi-modal: the effect of captions}
-The multi-modal experiments use the fine-tuned GPT-2. Figure~\ref{fig:multimodal}
-shows the average relative testing error from zero-shot to five-shot under three
-prompting regimes: no caption, vague caption (form of the equation, no parameters),
-and precise caption (full parameters).
-
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}
-\begin{semilogyaxis}[
-  width=8.4cm,height=5.4cm,
-  xlabel={number of examples $J$}, ylabel={relative error},
-  xmin=-0.3,xmax=5.3,ymin=0.01,ymax=2,
-  xtick={0,1,2,3,4,5},
-  tick label style={font=\small},
-  legend style={font=\small,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
-  grid=both,grid style={gray!20}
-]
-  \addplot[color=gray,thick,mark=*]       coordinates {(0,1.0)(1,0.045)(2,0.030)(3,0.024)(4,0.022)(5,0.021)};
-  \addplot[color=iconblue,thick,mark=*]   coordinates {(0,0.20)(1,0.040)(2,0.028)(3,0.023)(4,0.021)(5,0.020)};
-  \addplot[color=iconaccent,thick,mark=*] coordinates {(0,0.024)(1,0.022)(2,0.020)(3,0.019)(4,0.018)(5,0.018)};
-  \legend{no caption, vague caption, precise caption}
-\end{semilogyaxis}
-\end{tikzpicture}
-\caption{Average relative error over all 19 families for the fine-tuned GPT-2
-multi-modal model. Trends approximate~\citet[Fig.~7]{yang2024icon_lm}. Precise
-captions enable competitive zero-shot prediction; vague captions still substantially
-reduce few-shot error.}
-\label{fig:multimodal}
-\end{figure}
-
-The qualitative pattern is consistent: caption precision substitutes for example
-data. The zero-shot result with vague captions is the most surprising: knowing the
-\emph{form} of the equation (e.g.\ that it is a damped oscillator) lets the model
-identify the parameters from the condition itself, when the condition is rich
-enough. For damped-oscillator problems the decay rate can be read from a segment of
-the time series; for Poisson problems the boundary conditions are visible in the
-condition.
-
-\subsection{Ablation: pre-trained vs.\ randomly initialised GPT-2}
-The most thought-provoking experiment in the paper is the ablation on the GPT-2
-initialisation~(\citet[Table~3]{yang2024icon_lm}, reproduced in
-Table~\ref{tab:ablation}). Both models are trained identically except for the GPT-2
-starting point: language-pre-trained weights, or random.
+Table~\ref{tab:context} reports the saved sparse-query evaluation on the held-out
+test set. The main trend matches the ICON-LM hypothesis that examples in the prompt
+help the model specialize to the hidden operator. With no caption, relative error
+falls from $22.77\%$ at zero demonstrations to $15.95\%$ at three demonstrations.
+Captions mostly help when the prompt has few or no examples. At zero shots, the
+vague-caption model improves over the no-caption baseline by $6.62$ percentage points,
+and the precise-caption model improves by $8.22$ percentage points.
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{lccc}
+\begin{tabular}{lcccc}
 \toprule
-\textbf{GPT-2 initialisation} & \textbf{Train (\%)} & \textbf{Test (\%)} & \textbf{Gap (\%)} \\
+Prompt mode & 0-shot & 1-shot & 2-shot & 3-shot \\
 \midrule
-Pre-trained          & $2.30$ & $2.44$ & $\mathbf{0.14}$ \\
-Randomly initialised & $2.07$ & $3.08$ & $1.01$ \\
+Precise caption & $14.55\pm0.37\%$ & $13.92\pm0.41\%$ & $14.29\pm0.26\%$ & $14.38\pm0.42\%$ \\
+Vague caption   & $16.15\pm0.62\%$ & $14.70\pm0.47\%$ & $15.09\pm0.29\%$ & $15.06\pm0.49\%$ \\
+No caption      & $22.77\pm0.35\%$ & $15.61\pm0.57\%$ & $16.08\pm0.38\%$ & $15.95\pm0.59\%$ \\
 \bottomrule
 \end{tabular}
-\caption{Zero-shot relative error with precise captions, averaged over all 19
-families. Pre-training reduces the generalisation gap substantially but slightly
-underperforms in-distribution training error.}
-\label{tab:ablation}
+\caption{Relative $L_2$ prediction error on held-out
+Burgers operators. Errors are mean $\pm$ std over three seeds.}
+\label{tab:context}
 \end{table}
+The same context-scaling result is visualized in Figure~\ref{fig:context_scaling}.
+The plot makes the main effect clearer than the table: the no-caption model is
+poor at zero shots because it has no information about the hidden viscosity, while
+one in-context trajectory closes most of the gap.
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.64\textwidth]{panel_a.png}
+\caption{Few-shot context scaling on the one-dimensional Burgers experiment.
+This compact plot corresponds to 
+Table~\ref{tab:context}.}
+\label{fig:context_scaling}
+\end{figure}
 
-The pre-trained model has a much smaller generalisation gap, suggesting that
-language pre-training equips GPT-2 with priors that help it parse the
-caption-distribution shift between training and test captions (which differ
-in surface form but not content). Outside the zero-shot setting, however, the
-randomly initialised model is reported to outperform the pre-trained one on
-few-shot prediction. We discuss this tension in Section~\ref{sec:discussion}.
+The strongest improvement occurs from zero to one demonstration. This is physically
+reasonable, as a single observed trajectory reveals whether the viscosity
+is damping high-frequency structure quickly or allows sharp gradients to
+persist. Additional examples help less because all initial conditions are drawn
+from the same random Fourier distribution, so the prompt
+already has a fairly clear signal about the operator after just one or two examples.
+
+\subsection{Inverse Diagnostic}
+
+As a separate diagnostic, the evaluation code bins held-out operators by
+$\log\nu$ and classifies each operator from five trajectory features: relative
+change from the initial condition, final-frame change, frame-to-frame change,
+high-frequency power ratio, and gradient magnitude. A nearest-centroid classifier
+achieves $\ToyInverseAcc$ accuracy over five bins. Most mistakes occur between
+neighboring viscosity bins, which is consistent with the fact that Burgers
+dynamics vary continuously with $\nu$. This diagnostic supports the premise that
+the context trajectories carry recoverable information about the hidden operator.
 
 %==============================================================
-\section{Discussion and Conclusion}
+\section{Discussion}
 \label{sec:discussion}
 
-\subsection{What ICON-LM does well}
-The architectural reformulation is genuinely elegant. The mask in
-Figure~\ref{fig:mask} satisfies all five required invariants, yet differs from a
-standard causal mask in only a handful of cells. The next-function prediction loss
-extracts more gradient information per prompt without changing the data pipeline.
-And the framework cleanly admits a pre-trained LM as a starting point---something
-that simply isn't possible for encoder--decoder ICON or for FNO-style architectures.
-The multi-modal demonstration is, to our reading, the strongest qualitative claim:
-the model is genuinely using textual information, not just regularising on it.
+\subsection{What Worked}
 
-\subsection{Limitations}
-Several limitations should temper the broader claims.
+The experiment successfully implements the central ICON-LM mechanism in a compact
+setting. The mask is the most important piece, letting a standard self-attention
+stack act as a causal learner over functions while preserving permutation
+symmetry inside each sampled function. The same model can run with or without a
+caption because captions are just prefix tokens. The code also supports
+grid-flexible inference: changing the query-token set is enough to ask for a
+different output grid, since the final layer is applied tokenwise.
 
-\paragraph{Function representations are scattered points.}
-ICON-LM only ever sees a function as a discrete collection of key--value samples.
-For some applications this is natural; for others, especially high-dimensional or
-highly oscillatory problems, alternative representations (Fourier coefficients,
-neural fields, mesh-graph representations) are more appropriate, and adapting the
-mask design to those is non-trivial.
+The results also show meaningful in-context adaptation. The no-caption
+zero-shot case is effectively an average-operator baseline, as it sees the initial
+condition but has no demonstration revealing the viscosity. Adding one
+condition--trajectory example sharply lowers error, indicating that the model uses
+the prompt to infer the operator parameter.
 
-\paragraph{Captions are GPT-4 generated.}
-The training captions are produced by prompting GPT-4 to rephrase hand-crafted
-templates. This bounds the distribution the model sees in training. Robustness to
-adversarial captions, captions that name variables differently, or captions in
-languages other than English is not evaluated.
+\subsection{Limitations and Sources of Error}
 
-\paragraph{Compute.}
-The full multi-modal training is reported at $\approx 5.5$ days on dual RTX
-4090s, with $10^6$ optimiser steps. This is modest by language-model standards but
-prohibitive without dedicated hardware. The single-modal variant at $37.5$ hours
-on one GPU is more accessible.
+The main limitation is scale. The original ICON-LM paper trains on $19$ operator
+families and uses much larger models, including a GPT-2 backbone for the
+multi-modal setting~\citep{yang2024icon_lm}. Our implementation trains a 2.21M
+parameter transformer on one PDE family. It is therefore a faithful mechanism
+study, not evidence that the model is a general scientific foundation model.
 
-\paragraph{The pre-training tension.}
-The ablation in Table~\ref{tab:ablation} hints at a structural problem. A
-language-pre-trained backbone gives better caption generalisation but worse
-numerical few-shot. We interpret this as follows: language pre-training imbues
-GPT-2 with strong textual representational priors; these help when the input shift
-is captional, but they also leave the model less inclined to treat the function
-data tokens as numerically meaningful. The model effectively spends a portion of
-its capacity remaining a language model. A more careful study would parametrically
-vary the fraction of language data preserved during fine-tuning, or freeze portions
-of the network selectively.
+The caption channel is also simplified. Using MiniLM embeddings avoids the compute
+cost of fine-tuning a language model, but it weakens the claim that the model is
+parsing equations as language.
 
-\subsection{Connections to broader SciML}
-ICON-LM sits at the intersection of two trajectories in scientific machine learning:
-operator learning and foundation models. The captioning mechanism is, in our view,
-a cleaner alternative to PINN-style soft constraints for multi-task settings.
-A PINN loss is a hard commitment to a specific equation; a caption is a soft signal
-that the network may or may not exploit, and that travels gracefully across operator
-families. This makes it a more natural fit for the foundation-model setting, where
-the task itself is being identified at inference time.
+There are also numerical and modeling simplifications. The data live on a fixed
+periodic one-dimensional grid, the initial conditions come from a narrow Fourier
+distribution, and all trajectories are short. The model predicts sampled future
+states directly rather than enforcing the PDE residual. Consequently, it can make
+physically inconsistent predictions, especially in low-viscosity regimes where
+small phase errors near sharp fronts matter. A physics-informed loss or a
+conservation-aware architecture could reduce this error, but would move away from
+the clean prompt-learning abstraction.
 
-\subsection{Conclusion}
-We have analysed ICON-LM, a framework that recasts in-context operator learning as
-language modelling over functions. Its principal contributions are an attention
-mask satisfying five non-trivial invariants---including a graph-reachability
-condition that rules out indirect information leakage---and a multi-modal extension
-that admits textual descriptions of the operator. Reported results indicate
-consistent improvements over both an encoder--decoder ICON baseline and classical
-fine-tuned operator learners; the multi-modal extension reduces example data
-requirements, sometimes dramatically. A surprising ablation reveals a tension
-between language pre-training and numerical few-shot competence, which we
-identified as a worthwhile direction for follow-up work.
+\subsection{Future Improvements}
+
+The most natural next step is to broaden the operator distribution. Even within
+Burgers dynamics, one could vary forcing, boundary conditions, final time, or the
+initial-condition spectrum. A second direction is to replace the frozen sentence
+embedding with a trainable text encoder or a small language-model backbone, then
+test whether exact numerical captions become more useful. Finally, evaluation
+should include out-of-distribution viscosities and higher-resolution query grids
+to measure whether the model has learned an actual robust operator representation rather
+than interpolation over the training setup.
 
 %==============================================================
-\bibliographystyle{plainnat}
+\section{Conclusion}
+\label{sec:conclusion}
+
+ICON-LM reframes operator learning as a language-model-like prediction problem
+over functions. Our implementation demonstrates this idea on the viscous Burgers
+equation, where sparse function samples become tokens, examples become context, captions
+become prefix information, and a custom attention mask prevents leakage from
+answers into queries. The saved experiment shows that in-context examples reduce
+held-out trajectory error, and captions help most when no demonstrations are
+available. At the same time, the project makes clear that multi-modal scientific
+operator learning is sensitive to representation choices. Exact numerical
+information in text isn't automatically useful. The model, caption encoder, and
+training distribution must make that information accessible.
+
+%==============================================================
 \begin{thebibliography}{99}
+
 \bibitem[Bommasani et~al.(2021)]{bommasani2021opportunities}
 R.~Bommasani et~al.
 \newblock On the opportunities and risks of foundation models.
@@ -616,11 +498,6 @@ R.~Bommasani et~al.
 T.~Brown et~al.
 \newblock Language models are few-shot learners.
 \newblock {\em Advances in Neural Information Processing Systems}, 33:1877--1901, 2020.
-
-\bibitem[Chen and Chen(1995)]{chen1995universal}
-T.~Chen and H.~Chen.
-\newblock Universal approximation to nonlinear operators by neural networks with arbitrary activation functions and its application to dynamical systems.
-\newblock {\em IEEE Transactions on Neural Networks}, 6(4):911--917, 1995.
 
 \bibitem[Karniadakis et~al.(2021)]{karniadakis2021pinn}
 G.~E. Karniadakis, I.~G. Kevrekidis, L.~Lu, P.~Perdikaris, S.~Wang, and L.~Yang.
@@ -634,28 +511,23 @@ N.~Kovachki, Z.~Li, B.~Liu, K.~Azizzadenesheli, K.~Bhattacharya, A.~Stuart, and 
 
 \bibitem[Li et~al.(2021)]{li2021fourier}
 Z.~Li, N.~B. Kovachki, K.~Azizzadenesheli, B.~Liu, K.~Bhattacharya, A.~Stuart, and A.~Anandkumar.
-\newblock {Fourier neural operator for parametric partial differential equations}.
+\newblock Fourier neural operator for parametric partial differential equations.
 \newblock In {\em International Conference on Learning Representations}, 2021.
-
-\bibitem[Ling et~al.(2016)]{ling2016reynolds}
-J.~Ling, A.~Kurzawski, and J.~Templeton.
-\newblock Reynolds averaged turbulence modelling using deep neural networks with embedded invariance.
-\newblock {\em Journal of Fluid Mechanics}, 807:155--166, 2016.
 
 \bibitem[Lu et~al.(2021)]{lu2021deeponet}
 L.~Lu, P.~Jin, G.~Pang, Z.~Zhang, and G.~E. Karniadakis.
-\newblock Learning nonlinear operators via {DeepONet} based on the universal approximation theorem of operators.
+\newblock Learning nonlinear operators via DeepONet based on the universal approximation theorem of operators.
 \newblock {\em Nature Machine Intelligence}, 3(3):218--229, 2021.
 
-\bibitem[Radford et~al.(2019)]{radford2019gpt2}
-A.~Radford, J.~Wu, R.~Child, D.~Luan, D.~Amodei, and I.~Sutskever.
-\newblock Language models are unsupervised multitask learners.
-\newblock {\em OpenAI Blog}, 2019.
+\bibitem[Reimers and Gurevych(2019)]{reimers2019sentence}
+N.~Reimers and I.~Gurevych.
+\newblock Sentence-BERT: Sentence embeddings using Siamese BERT-networks.
+\newblock In {\em Proceedings of EMNLP-IJCNLP}, 2019.
 
-\bibitem[Raissi et~al.(2019)]{raissi2019pinn}
-M.~Raissi, P.~Perdikaris, and G.~E. Karniadakis.
-\newblock Physics-informed neural networks: a deep learning framework for solving forward and inverse problems involving nonlinear partial differential equations.
-\newblock {\em Journal of Computational Physics}, 378:686--707, 2019.
+\bibitem[Vaswani et~al.(2017)]{vaswani2017attention}
+A.~Vaswani et~al.
+\newblock Attention is all you need.
+\newblock In {\em Advances in Neural Information Processing Systems}, 2017.
 
 \bibitem[Yang et~al.(2023)]{yang2023icon}
 L.~Yang, S.~Liu, T.~Meng, and S.~J. Osher.
@@ -666,11 +538,6 @@ L.~Yang, S.~Liu, T.~Meng, and S.~J. Osher.
 L.~Yang, S.~Liu, and S.~J. Osher.
 \newblock Fine-tune language models as multi-modal differential equation solvers.
 \newblock Preprint, UCLA, 2024.
-
-\bibitem[Zhang et~al.(2018)]{zhang2018deep}
-L.~Zhang, J.~Han, H.~Wang, R.~Car, and W.~E.
-\newblock Deep potential molecular dynamics: a scalable model with the accuracy of quantum mechanics.
-\newblock {\em Physical Review Letters}, 120(14):143001, 2018.
 
 \end{thebibliography}
 

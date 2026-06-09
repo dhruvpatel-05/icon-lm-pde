@@ -4,9 +4,8 @@
 %
 %  Compile with:  pdflatex Presentation.tex
 %
-%  Target: ~7 minutes total, two presenters (3.5 min each).
-%  Split marked with ====== PRESENTER 1 / 2 ====== comments.
-%  11 slides + backup references.
+%  Target: 7 minutes total, two presenters (about 3.5 min each).
+%  Live flow: title + 7 content slides; conclusion/details are backup.
 %==============================================================
 
 \documentclass[10pt,aspectratio=169]{beamer}
@@ -45,11 +44,11 @@
 \newcommand{\bool}{\operatorname{bool}}
 
 %-------------------- METADATA -------------------------------
-\title[ICON-LM]{Fine-Tuning Language Models as\\Multi-Modal Differential Equation Solvers}
-\subtitle{A study of ICON-LM \,---\, Yang, Liu, \& Osher (2024)}
+\title[ICON-LM]{Fine-Tuning Language Models as\\Multimodal Differential Equation Solvers}
+\subtitle{ICON-LM \,---\, Yang, Liu, \& Osher (2024)}
 \author[]{Aditya Patil \and Dhruv Patel}
 \institute[MATH 270A]{MATH 270A Final Project}
-\date{June 2, 2026}
+\date{June 3, 2026}
 
 \IfFileExists{toy_multiphysics/metrics.tex}{\input{toy_multiphysics/metrics.tex}}{}
 \IfFileExists{toy_multiphysics/eval_metrics.tex}{\input{toy_multiphysics/eval_metrics.tex}}{}
@@ -72,116 +71,82 @@
 \end{frame}
 
 %==============================================================
-% ============== PRESENTER 1 (slides 2--6) ====================
+% ============== PRESENTER 1 (slides 2--5) ====================
 %==============================================================
 
 \section{Motivation and the ICON-LM idea}
 
-%----- Slide 2: Motivation -----------------------------------
-\begin{frame}{Why operator learning needs a new paradigm}
+%----- Slide 2: Motivation + proposal ------------------------
+\begin{frame}{Why ICON-LM?}
   \begin{columns}[T,onlytextwidth]
-    \column{0.55\textwidth}
-      \textbf{Classic operator learning} (DeepONet, FNO, \dots)
-      \begin{itemize}
-        \item Train \emph{one} network to approximate \emph{one} operator $T: c \mapsto u$.
-        \item New PDE $\Rightarrow$ new dataset $\Rightarrow$ re-train.
-        \item No way to inject what we \emph{know} about the equation.
+    \column{0.50\textwidth}
+      \textbf{Classic Operator Learning}
+      \begin{itemize}\setlength\itemsep{0.16em}
+        \item Trains 1 neural operator for 1 map \\ $T:c\mapsto u$
+        \item Change the PDE, coefficients, or task \\
+        $\Rightarrow$ Retrain or fine-tune
+        \item Hard to inject equation knowledge without redesigning the model
       \end{itemize}
-      \vspace{0.3em}
-      \textbf{The aspiration: a foundation model for DEs}
-      \begin{itemize}
-        \item \emph{Train once, apply many.}
-        \item Learn operators \emph{at inference time} from a prompt.
-        \item Directly inspired by in-context learning in GPT-style LMs.
+      \vspace{0.45em}
+      \textbf{ICON-LM}
+      \begin{itemize}\setlength\itemsep{0.16em}
+        \item Treat examples $\{(c_j,u_j)\}$ as the \emph{context}
+        \item Treat a text/equation caption $\kappa$ as another input modality
+        \item Predict the query function in one forward pass with no weight updates
       \end{itemize}
-    \column{0.42\textwidth}
-      \begin{tikzpicture}[scale=0.8,transform shape]
+    \column{0.48\textwidth}
+      \begin{block}{Changes introduced by ICON-LM}
+        \begin{enumerate}\setlength\itemsep{0.16em}
+          \item \textbf{Multimodal prompts}: Data examples with a caption to describe the operator
+          \item \textbf{LM-style training}: 1 transformer encoder trained by next-\emph{function} prediction
+        \end{enumerate}
+      \end{block}
+      \vspace{0.2em}
+      \begin{tikzpicture}[scale=0.72,transform shape]
         \tikzset{
-          tok/.style={draw,rounded corners,minimum width=1.4cm,minimum height=0.6cm,fill=iconlight,font=\scriptsize},
-          qtok/.style={draw,rounded corners,minimum width=1.4cm,minimum height=0.6cm,fill=iconaccent!25,font=\scriptsize}
+          tok/.style={draw,rounded corners,minimum width=1.45cm,minimum height=0.55cm,fill=iconlight,font=\scriptsize},
+          captok/.style={tok,fill=iconaccent!22,minimum width=2.2cm},
+          qtok/.style={tok,fill=iconaccent!35}
         }
-        \node[tok] (e1) at (0,0)   {$(c_1,u_1)$};
-        \node[tok] (e2) at (1.7,0) {$(c_2,u_2)$};
-        \node      at (3.1,0) {$\cdots$};
-        \node[tok] (eJ) at (4.5,0) {$(c_J,u_J)$};
-        \node[qtok] (cq) at (2.3,-1.0) {$c_{\text{q}}$};
-        \node[draw,thick,iconblue,rounded corners,minimum width=2.6cm,minimum height=0.9cm] (T) at (2.3,-2.2) {\small Transformer $T_\theta$};
-        \node[qtok] (uhat) at (2.3,-3.4) {$\hat{u}_{\text{q}}$};
+        \node[captok] (cap) at (0,0) {$\kappa$: caption};
+        \node[tok] (e1) at (2.5,0) {$(c_1,u_1)$};
+        \node[tok] (e2) at (4.3,0) {$\cdots$};
+        \node[tok] (eJ) at (6.1,0) {$(c_J,u_J)$};
+        \node[qtok] (cq) at (3.0,-1.1) {$c_{\text{q}}$};
+        \node[draw,thick,iconblue,rounded corners,minimum width=3.2cm,minimum height=0.85cm] (T) at (3.0,-2.25) {\small ICON-LM};
+        \node[qtok] (uhat) at (3.0,-3.35) {$\hat{u}_{\text{q}}$};
+        \draw[->,thick] (cap.south) to[out=270,in=180] (T.west);
         \draw[->,thick] (eJ.south) to[out=270,in=0] (T.east);
         \draw[->,thick] (cq) -- (T);
-        \draw[->,thick] (T)  -- (uhat);
-        \node[font=\scriptsize] at (2.3,0.7) {\textit{prompt of $J$ examples}};
-      \end{tikzpicture}\\[0.3em]
-      {\scriptsize Prompted inference, \emph{no} weight updates.}
-  \end{columns}
-\end{frame}
-
-%----- Slide 3: ICON-LM proposal -----------------------------
-\begin{frame}{The ICON-LM proposal: prompts \emph{plus} captions}
-  \begin{block}{Two contributions over ICON (Yang et al., 2023)}
-    \begin{enumerate}\setlength\itemsep{0.1em}
-      \item \textbf{Multi-modal prompt}: a \emph{caption} $\kappa$ alongside the data, with knowledge that no example pair can convey.
-      \item \textbf{LM-style architecture}: one transformer encoder, next-\emph{function} prediction --- structurally identical to a language model.
-    \end{enumerate}
-  \end{block}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.55\textwidth}
-      \textbf{Captions disclose what we know}
-      \begin{itemize}\setlength\itemsep{0.1em}
-        \item \emph{Vague:} ``ODE with state $u$ and control $c$;\\ $du/dt = a_1 c(t)+a_2$.'' (form only)
-        \item \emph{Precise:} ``$du/dt = 0.0014\,c(t)+0.0021$.'' (parameters)
-      \end{itemize}
-      \vspace{0.4em}
-      \textbf{Benchmark}: 19 operator families
-      \begin{itemize}
-        \item ODEs (\#1--8), PDEs (\#9--14), mean-field control (\#15--19).
-        \item 1{,}000 operators per family, 100 condition--QoI pairs each.
-      \end{itemize}
-    \column{0.42\textwidth}
-      \begin{tikzpicture}[scale=0.85,transform shape]
-        \tikzset{
-          mybox/.style={draw,rounded corners,minimum height=0.85cm,align=center,font=\scriptsize},
-          capbox/.style={mybox,fill=iconaccent!20,minimum width=3.4cm},
-          ex/.style ={mybox,fill=iconlight,minimum width=3.4cm},
-          mod/.style={draw,thick,iconblue,rounded corners,minimum width=3.4cm,minimum height=1.0cm,fill=white},
-          pred/.style={mybox,fill=iconaccent!35,minimum width=3.4cm}
-        }
-        \node[capbox] (cap) at (0,2.5) {\textbf{Caption}\\$du/dt=a_1 c+a_2$};
-        \node[ex] (ex1) at (0,1.4) {Examples $\{(c_j,u_j)\}_{j=1}^J$};
-        \node[ex] (cq) at (0,0.5) {Question condition $c_{\text{q}}$};
-        \node[mod] (T) at (0,-0.7) {ICON-LM};
-        \node[pred] (out) at (0,-1.8) {Prediction $\hat{u}_{\text{q}}$};
-        \draw[->,thick] (cap) -- (ex1);
-        \draw[->,thick] (ex1) -- (cq);
-        \draw[->,thick] (cq)  -- (T);
-        \draw[->,thick] (T)   -- (out);
+        \draw[->,thick] (T) -- (uhat);
       \end{tikzpicture}
+      \vspace{0.2em}
+
+      {\scriptsize Paper benchmark: 19 ODE/PDE/control operator families.}
   \end{columns}
 \end{frame}
 
 \section{Architecture}
 
-%----- Slide 4: Architecture overview -----------------------
-\begin{frame}{Architecture: one transformer encoder, LM-style}
-  \begin{columns}[T,onlytextwidth]
+%----- Slide 3: Architecture overview ------------------------
+\begin{frame}{Architecture}
+  \begin{columns}[onlytextwidth]
     \column{0.50\textwidth}
       \textbf{From encoder--decoder ICON to ICON-LM}
       \begin{itemize}\setlength\itemsep{0.1em}
         \item Original ICON: two transformers ($\sim 31.6$M params).
         \item ICON-LM: a single GPT-style encoder ($\approx 15.8$M).
-        \item Drop-in compatible with pre-trained GPT-2.
+
       \end{itemize}
       \vspace{0.4em}
-      \textbf{Tokens}: $(\text{key},\text{value})$ pairs
-      \[
-        \text{key} = (\,\sigma,\ t,\ x\,),\quad \text{value} = c\ \text{or}\ u.
-      \]
+      \textbf{Tokens}:
       \begin{itemize}\setlength\itemsep{0.1em}
         \item Three token types per example: \textbf{C}ondition, \textbf{U} (QoI), \textbf{Q}uery.
-        \item Query tokens carry \emph{locations}; values zeroed out.
-        \item Shared positional encoding per type $\Rightarrow$ permutation invariance within a function.
+        \item Query tokens carry spatial \emph{locations}; values zeroed out (model fills these in).
       \end{itemize}
     \column{0.48\textwidth}
+      \vspace*{\fill}
+      \centering
       \begin{tikzpicture}[scale=0.78,transform shape]
         \tikzset{tok/.style={draw,rounded corners,minimum width=1.1cm,minimum height=0.55cm,font=\scriptsize}}
         \node[tok,fill=iconaccent!20] (cap)  at (0,0)   {CAP};
@@ -191,71 +156,61 @@
         \node[tok,fill=iconlight]      (c2) at (4.8,0) {$C_2$};
         \node[tok,fill=iconlight]      (q2) at (6.0,0) {$U_2$};
         \node[tok,fill=iconaccent!35]  (qq2) at (7.2,0) {$Q_2$};
-
         \node[draw,thick,iconblue,fill=white,rounded corners,
               minimum width=8.2cm,minimum height=1cm] (tr) at (3.6,-1.6) {\small Transformer encoder (custom mask)};
-
         \node[draw,rounded corners,minimum width=1.6cm,fill=iconlight,font=\scriptsize] (h1) at (3.6,-3.2) {predictions at $Q_j$};
         \foreach \n in {cap,c1,q1,qq1,c2,q2,qq2}{\draw[->] (\n) -- (tr.north -| \n);}
         \draw[->,thick] (tr) -- (h1);
-        \node[font=\tiny,anchor=west] at (-0.4,0.7) {input embedding};
-        \node[font=\tiny,anchor=west] at (-0.4,-3.8) {output head: keep query positions};
+        \node[font=\footnotesize,anchor=west] at (-0.4,0.7) {input embedding};
+        \node[font=\footnotesize,anchor=west] at (-0.4,-3.8) {output head: keep query positions};
       \end{tikzpicture}
+      \vspace*{\fill}
   \end{columns}
 \end{frame}
 
 \section{The Attention Mask}
 
-%----- Slide 5: Custom mask (centerpiece) --------------------
-\begin{frame}{The custom mask: five constraints in one diagram}
+%----- Slide 4: Custom mask (centerpiece) --------------------
+\begin{frame}{The Custom Mask: Preventing Leakage}
   \begin{columns}[T,onlytextwidth]
-    \column{0.52\textwidth}
-      \textbf{Required properties}
-      \begin{enumerate}\setlength\itemsep{0.1em}
-        \item Predict using caption + earlier examples + current condition.
-        \item \emph{No leakage} of the current QoI into its prediction.
-        \item Queries within an example are mutually \emph{independent}.
-        \item Token-permutation invariance within each function.
-        \item No indirect leakage: $\bool(M\!\cdot\!M)=M$.
-      \end{enumerate}
-      \vspace{0.4em}
-      \textbf{Block structure}
-      \begin{itemize}\setlength\itemsep{0.05em}
-        \item CAP block: lower-triangular (standard LM).
-        \item $Q_j$--$Q_j$ blocks: diagonal (independent queries).
-        \item $C/U$ blocks: rectangular (preserves symmetry).
+    \column{0.48\textwidth}
+      \textbf{Why it is needed}
+      \begin{itemize}\setlength\itemsep{0.2em}
+        \item Each example has an input function $C_j$ and output function $U_j$
+        \item To predict $U_j$, the query tokens $Q_j$ may use previous example pairs alongside $C_j$
+        \item But $Q_j$ must not attend to the current output $U_j$, because that is the answer
+        \item Previous queries unused as context
       \end{itemize}
-    \column{0.46\textwidth}
-      \begin{tikzpicture}[scale=0.42,transform shape]
-        \foreach \i in {0,...,9}{
-          \foreach \j in {0,...,9}{
-            \fill[gray!25] (\j,-\i) rectangle ++(1,-1);
-          }
-        }
-        \fill[white] (0,0) rectangle ++(1,-1);
-        \foreach \j in {0,1}{\fill[white] (\j,-1) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2}{\fill[white] (\j,-2) rectangle ++(1,-1);}
-        \foreach \j in {0,1,3}{\fill[white] (\j,-3) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2,4}{\fill[white] (\j,-4) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2,4,5}{\fill[white] (\j,-5) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2,4,6}{\fill[white] (\j,-6) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2,4,5,7}{\fill[white] (\j,-7) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2,4,5,7,8}{\fill[white] (\j,-8) rectangle ++(1,-1);}
-        \foreach \j in {0,1,2,4,5,7,9}{\fill[white] (\j,-9) rectangle ++(1,-1);}
-        \draw[step=1,gray!60,thin] (0,0) grid (10,-10);
-        \foreach \j/\lbl in {0/CAP,1/C1,2/U1,3/Q1,4/C2,5/U2,6/Q2,7/C3,8/U3,9/Q3}{
-          \node[font=\tiny,anchor=south] at (\j+0.5,0.1) {\lbl};
-        }
-        \foreach \i/\lbl in {0/CAP,1/C1,2/U1,3/Q1,4/C2,5/U2,6/Q2,7/C3,8/U3,9/Q3}{
-          \node[font=\tiny,anchor=east] at (-0.1,-\i-0.5) {\lbl};
-        }
-      \end{tikzpicture}\\[-0.2em]
-      \scriptsize White $=$ attend, grey $=$ masked. Adapted from~Yang et al., Fig.~3.
+
+      \vspace{0.35em}
+      \textbf{Key idea}
+      \begin{itemize}\setlength\itemsep{0.2em}
+        \item White blocks are allowed context, grey blocks are blocked to prevent answer leakage.
+      \end{itemize}
+      \[
+        Q_j \text{ can see } (C_1,U_1),\dots,(C_{j-1},U_{j-1}),C_j
+      \]
+      \[
+        Q_j \text{ cannot see } U_j
+      \]
+
+    \column{0.50\textwidth}
+      \begin{center}
+        \includegraphics[
+          width=\linewidth,
+          height=5.45cm,
+          keepaspectratio
+        ]{mask.png}
+
+        \vspace{0.15em}
+        {\scriptsize Figure 3 from Yang, Liu, \& Osher}
+      \end{center}
   \end{columns}
 \end{frame}
 
-%----- Slide 6: Training -------------------------------------
-\begin{frame}{Training: next-function prediction}
+
+%----- Slide 5: Training -------------------------------------
+\begin{frame}{Training}
   \begin{block}{Autoregressive loss across examples}
     For each $J = 0,1,\dots,I-1$ in an $I$-example prompt, predict $u_{J+1}$ from earlier examples and the caption:
     \[
@@ -265,186 +220,125 @@
       \mathcal{L}_{\text{prompt}} \;=\; \sum_{J=0}^{I-1}\bigl\lVert\hat{u}_{J+1}-u_{J+1}\bigr\rVert^2.
     \]
   \end{block}
-  \begin{itemize}\setlength\itemsep{0.1em}
+\begin{itemize}\setlength\itemsep{0.1em}
     \item One prompt simultaneously trains \emph{every} few-shot count $J$.
     \item With a caption, $J=0$ contributes (zero-shot); without, training starts at $J=1$.
     \item Multi-modal loss $=$ loss with caption $+$ loss without caption.
-    \item \textbf{Inference}: append a question $c_{\text{q}}$ + query tokens, one forward pass.
+    \item \textbf{Inference}: append a input condition $c_{\text{q}}$ + query tokens, one forward pass.
   \end{itemize}
 \end{frame}
 
 %==============================================================
-% ============== PRESENTER 2 (slides 7--11) ===================
+% ============== PRESENTER 2 (slides 6--8) ====================
 %==============================================================
 
 \section{Results}
 
-%----- Slide 7: Results vs ICON and vs classical -------------
-\begin{frame}{Results: ICON-LM beats ICON \emph{and} classical operator learners}
+%----- Slide 6: Paper results --------------------------------
+\begin{frame}{Paper Results}
   \begin{columns}[T,onlytextwidth]
-    \column{0.50\textwidth}
-      \textbf{vs.\ encoder--decoder ICON} (avg.\ over 19 families)
+    \column{0.45\textwidth}
+      \begin{block}{Main empirical claims}
+        \begin{itemize}\setlength\itemsep{0.18em}
+          \item \textbf{Smaller and stronger}: ICON-LM improves on encoder--decoder ICON with roughly half the parameters
+          \item \textbf{Captions matter}: Precise captions enable zero-shot prediction; vague captions reduce the number of examples needed
+        \end{itemize}
+      \end{block}
+      \vspace{0.25em}
       \begin{center}
-        \begin{tikzpicture}
-          \begin{axis}[
-            width=6.0cm,height=3.8cm,
-            xlabel={\footnotesize $J$ (examples)}, ylabel={\footnotesize rel.\ error},
-            xmin=0.5,xmax=5.5,ymin=0.01,ymax=0.035,
-            xtick={1,2,3,4,5},
-            tick label style={font=\scriptsize},
-            legend style={font=\tiny,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
-            grid=both,grid style={gray!20}
-          ]
-            \addplot[color=iconblue,thick,mark=*] coordinates {(1,0.0265)(2,0.0205)(3,0.0185)(4,0.0170)(5,0.0162)};
-            \addplot[color=iconaccent,thick,mark=square*] coordinates {(1,0.0305)(2,0.0240)(3,0.0215)(4,0.0205)(5,0.0198)};
-            \legend{ICON-LM, Enc--Dec ICON}
-          \end{axis}
-        \end{tikzpicture}
+        \scriptsize
+        \begin{tabular}{lcc}
+          \toprule
+          \textbf{Model} & \textbf{Params} & \textbf{Use at test time}\\
+          \midrule
+          Encoder--decoder ICON & $\sim 31.6$M & examples only\\
+          ICON-LM & $\sim 15.8$M & examples + caption\\
+          \bottomrule
+        \end{tabular}
       \end{center}
-      {\scriptsize Lower error at every $J$, half the parameters.}
-    \column{0.48\textwidth}
-      \textbf{vs.\ FNO / DeepONet} (Problem \#14)
-      \begin{center}
-        \begin{tikzpicture}
-          \begin{axis}[
-            width=6.0cm,height=3.8cm,
-            xlabel={\footnotesize fine-tuning steps},ylabel={\footnotesize rel.\ error},
-            xmin=0,xmax=200,ymin=0,ymax=0.30,
-            tick label style={font=\scriptsize},
-            legend style={font=\tiny,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
-            grid=both,grid style={gray!20}
-          ]
-            \addplot[color=iconblue,thick,domain=0:200,samples=30] {0.25*exp(-0.01*x)+0.06};
-            \addplot[color=iconaccent,thick,domain=0:200,samples=30] {0.28*exp(-0.012*x)+0.08};
-            \addplot[color=black,thick,dashed,domain=0:200] {0.025};
-            \legend{FNO, DeepONet, ICON-LM (1 pass)}
-          \end{axis}
-        \end{tikzpicture}
-      \end{center}
-      {\scriptsize One forward pass beats hundreds of fine-tuning steps.}
-  \end{columns}
-\end{frame}
-
-%----- Slide 8: Multi-modal results --------------------------
-\begin{frame}{Multi-modal: captions cut data requirements}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.55\textwidth}
+    \column{0.53\textwidth}
       \begin{center}
         \begin{tikzpicture}
           \begin{semilogyaxis}[
-            width=6.4cm,height=4.6cm,
-            xlabel={\footnotesize $J$ (examples)}, ylabel={\footnotesize relative error},
+            width=6.55cm,height=4.7cm,
+            xlabel={\footnotesize examples in prompt $J$},
+            ylabel={\footnotesize relative error},
             xmin=-0.3,xmax=5.3,ymin=0.01,ymax=2,
             xtick={0,1,2,3,4,5},
             tick label style={font=\scriptsize},
-            legend style={font=\scriptsize,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
+            legend style={font=\tiny,at={(0.97,0.97)},anchor=north east,draw=none,fill=none},
             grid=both,grid style={gray!20}
           ]
-            \addplot[color=gray,thick,mark=*]      coordinates {(0,1.0)(1,0.045)(2,0.030)(3,0.024)(4,0.022)(5,0.021)};
-            \addplot[color=iconblue,thick,mark=*]  coordinates {(0,0.20)(1,0.040)(2,0.028)(3,0.023)(4,0.021)(5,0.020)};
-            \addplot[color=iconaccent,thick,mark=*]coordinates {(0,0.024)(1,0.022)(2,0.020)(3,0.019)(4,0.018)(5,0.018)};
-            \legend{no caption, vague caption, precise caption}
+            \addplot[color=gray,thick,mark=*]       coordinates {(0,1.0)(1,0.045)(2,0.030)(3,0.024)(4,0.022)(5,0.021)};
+            \addplot[color=iconblue,thick,mark=*]   coordinates {(0,0.20)(1,0.040)(2,0.028)(3,0.023)(4,0.021)(5,0.020)};
+            \addplot[color=iconaccent,thick,mark=*] coordinates {(0,0.024)(1,0.022)(2,0.020)(3,0.019)(4,0.018)(5,0.018)};
+            \legend{no caption, vague, precise}
           \end{semilogyaxis}
         \end{tikzpicture}
       \end{center}
-    \column{0.42\textwidth}
-      \textbf{Interpretation}
-      \begin{itemize}\setlength\itemsep{0.2em}
-        \item Precise captions $\Rightarrow$ real \textbf{zero-shot} learning.
-        \item Vague captions still help: knowing the equation \emph{form} lets the model identify parameters from one example.
-        \item Gap to ``no caption'' is largest where data is scarcest.
-      \end{itemize}
+      \vspace{-0.35em}
+      {\scriptsize Caption benefit is most visible at $J=0$ or $J=1$, exactly where numerical examples are sparse.}
   \end{columns}
 \end{frame}
 
 \section{Discussion}
 
-%----- Slide 9: Ablation -------------------------------------
-\begin{frame}{Ablation: a tension hiding in the GPT-2 backbone}
-  \begin{block}{Zero-shot relative error (precise captions, 19-family avg.)}
+%----- Slide 7: Ablation -------------------------------------
+\begin{frame}{Ablation}
+  \begin{block}{Zero-shot relative error with precise captions}
     \centering
     \begin{tabular}{lccc}
       \toprule
       \textbf{GPT-2 init.} & \textbf{Train} & \textbf{Test} & \textbf{Gap} \\
       \midrule
-      Pre-trained          & 2.30\,\% & 2.44\,\% & \textbf{0.14\,\%} \\
-      Randomly initialised & 2.07\,\% & 3.08\,\% & 1.01\,\% \\
+      Pre-trained weights         & 2.30\,\% & 2.44\,\% & \textbf{0.14\,\%} \\
+      Random weights & 2.07\,\% & 3.08\,\% & 1.01\,\% \\
       \bottomrule
     \end{tabular}
   \end{block}
   \begin{itemize}\setlength\itemsep{0.2em}
-    \item \textbf{Pre-trained} GPT-2 generalises better across captions: language priors transfer.
-    \item \textbf{Random init} wins on few-shot when many examples are given: pre-trained weights are tuned for language, not numerics.
-    \item Open question: can a backbone retain both advantages simultaneously?
+    \item \textbf{Pre-trained} GPT-2 generalizes better across captions \begin{itemize}
+        \item Suggests language priors transfer
+    \end{itemize}
+    \item \textbf{Random init} can win in few-shot settings 
+    \begin{itemize}
+        \item Suggests language pre-training is not always ideal for numerical prediction
+    \end{itemize}
   \end{itemize}
 \end{frame}
 
 \section{Our experiment}
 
-%----- Slide 10: Toy swirly fluid prediction -----------------
-\begin{frame}{Our experiment: in-context fluid forecasting}
+%----- Slide 8: Our reproduction placeholder -----------------
+\begin{frame}{Reproduction on Burgers' Equation}
+  \small
   \begin{columns}[T,onlytextwidth]
-    \column{0.39\textwidth}
-      \scriptsize
-      \textbf{Operator family}
-      \[
-        \begin{aligned}
-        q_t+\mathbf{u}\!\cdot\nabla q &= \kappa\Delta q,\\
-        \nabla\!\cdot\mathbf{u} &= 0,\quad \mathbf{u}=\nabla^\perp\psi
-        \end{aligned}
-      \]
-      on $[0,1]^2$ with periodic BC.
-      \begin{itemize}\setlength\itemsep{0.04em}
-        \item Input: initial dye/tracer field $q(0)$.
-        \item Output: \ToyFrames{} future tracer frames.
-        \item Hidden operator: diffusion, shear, or vortical regime.
-        \item Infer fluid transport from demos.
+    \column{0.47\textwidth}
+      \textbf{What we reproduced}
+      \vspace{0.2em}
+      \begin{block}{}
+        \centering
+        $\displaystyle u_t + u\,u_x \;=\; \nu\,u_{xx}$
+      \end{block}
+      \vspace{0.1em}
+      \begin{itemize}\setlength\itemsep{0.10em}
+        \item Reproduced ICON-LM architecture: custom mask + next-function loss
+        \item  Applied to 1D viscous Burgers' equation, operator family indexed by $\nu$.
+        \item 2.2M-parameter transformer; 5{,}000 gradient steps.
+        \item Optional captions via frozen MiniLM embeddings.
       \end{itemize}
-      \vspace{0.05em}
-      \textbf{Our ICON-LM}
-      \begin{itemize}\setlength\itemsep{0.03em}
-        \item \ToyGrid{} grid; \ToyShots{}-shot prompts.
-        \item 4 layers, $d{=}64$, $\sim 135$K params.
-        \item Train on \ToyTrainDevice{}: \ToyTrainTime{}.
-        \item Held-out test rel.\ $L^2$: \ToyTestRel{}.
-        \item Eval: \ToyContextSummary{}; inverse ID \ToyInverseAcc{}.
-      \end{itemize}
-    \column{0.59\textwidth}
-      \begin{center}
-        \IfFileExists{toy_multiphysics/figure.pdf}{%
-          \includegraphics[height=5.05cm,keepaspectratio]{toy_multiphysics/figure.pdf}%
-        }{%
-          \fbox{\parbox[c][3.9cm][c]{0.95\linewidth}{\centering\itshape\small (Toy multi-physics target / prediction / difference figure --- generated by \texttt{toy\_multiphysics/run.sh})}}%
-        }\\
-        {\tiny Top: ground-truth $q(t)$. Middle: ICON-LM forecast. Bottom: signed prediction error.}
-      \end{center}
-  \end{columns}
-\end{frame}
-
-\section{Conclusion}
-
-%----- Slide 11: Conclusion ----------------------------------
-\begin{frame}{Conclusion}
-  \begin{columns}[T,onlytextwidth]
     \column{0.50\textwidth}
-      \textbf{What we take away}
-      \begin{itemize}\setlength\itemsep{0.2em}
-        \item In-context operator learning $\to$ next-function prediction: a clean reframing as a language-model problem.
-        \item Captions are a soft, transferable alternative to PINN-style constraints.
-        \item Smaller \emph{and} stronger than encoder--decoder ICON; beats fine-tuned FNO/DeepONet.
-      \end{itemize}
-    \column{0.48\textwidth}
-      \textbf{Limitations \& open questions}
-      \begin{itemize}\setlength\itemsep{0.2em}
-        \item Scattered-point representation: not ideal for high-D / oscillatory PDEs.
-        \item Captions are GPT-4-generated: distribution shift untested.
-        \item Pre-training tension: how to keep both language and numerical few-shot strengths?
-      \end{itemize}
+      \begin{center}
+  \IfFileExists{panel_a.png}{%
+    \includegraphics[width=\linewidth,height=4.65cm,keepaspectratio]{panel_a.png}%
+  }{%
+    \fbox{\parbox[c][3.65cm][c]{0.92\linewidth}{\centering
+      \small Few-shot context-scaling panel missing.\\[0.45em]
+      \scriptsize Generate \texttt{panel\_a.png}.
+    }}%
+  }
+\end{center}
   \end{columns}
-  \vspace{0.6em}
-  \begin{center}
-    \large\itshape Thank you \,---\, questions?
-  \end{center}
 \end{frame}
 
 %==============================================================
@@ -453,7 +347,32 @@
 
 \appendix
 
-\begin{frame}{Selected references}
+\section{Backup}
+
+\begin{frame}{Conclusion}
+  \begin{block}{Key Takeaway}
+    ICON-LM turns operator learning into a language-model-style problem:
+    examples are context, functions are tokens, captions are side information,
+    and a custom mask makes next-function prediction possible without leakage.
+  \end{block}
+  \vspace{0.25em}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.50\textwidth}
+      \textbf{Why it works}
+      \begin{itemize}\setlength\itemsep{0.18em}
+        \item Single transformer encoder.
+        \item One training sequence supervises all few-shot levels at once.
+        \item Captions help when examples are scarce.
+      \end{itemize}
+    \column{0.48\textwidth}
+      \vspace{2em}
+      \begin{center}
+        \large\textit{Thanks for listening!}
+      \end{center}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{References}
   \footnotesize
   \begin{itemize}\setlength\itemsep{0.15em}
     \item L. Yang, S. Liu, S. J. Osher. \textit{Fine-Tune Language Models as Multi-Modal Differential Equation Solvers}, 2024. (\textbf{The paper.})
