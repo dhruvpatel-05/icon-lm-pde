@@ -7,10 +7,12 @@ useless/*
 **/*pickle
 **/*tfrecord
 **/*png
+!burgers-example/scaling_curve.png
+!burgers-example/zero_shot_bar.png
 **/__pycache__/
 **/.venv/
-toy_multiphysics/metrics.tex
-toy_multiphysics/eval_metrics.tex
-toy_multiphysics/context_scaling.csv
-toy_multiphysics/inverse_confusion.csv
-toy_multiphysics/.matplotlib/
+burgers-example/metrics.tex
+burgers-example/eval_metrics.tex
+burgers-example/context_scaling.csv
+burgers-example/inverse_confusion.csv
+burgers-example/.matplotlib/

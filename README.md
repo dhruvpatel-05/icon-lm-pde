@@ -1,75 +1,66 @@
-# In-Context Operator Networks (ICON)
+# Burgers ICON-LM Example
 
-This repository contains the code for the following papers. Feel free to star this repository and cite our papers if you find it useful for your research. You can find the citation details below.
+This repository contains a small, self-contained example of **In-Context
+Operator Networks with Language captions (ICON-LM)** applied to the 1D
+viscous Burgers equation:
 
-This repository serves solely as an archive and is not actively maintained. For tutorial code, please refer to our other repository at [https://github.com/scaling-group/icon-tutorial](https://github.com/scaling-group/icon-tutorial). Also, see [our website](https://scaling-group.github.io/research/) for latest updates on ICON and other projects. 
-
-🚀 Check out [**icon-core**](https://github.com/scaling-group/icon-core) on GitHub, the open-source infrastructure package for your ICON development, featuring built-in AI support, modular implementations, training pipelines, and examples to get you started.
-
-## In-Context Operator Learning with Data Prompts for Differential Equation Problems 
-
-This paper aims to answer the following question: Can we build a large model for broad spectrum of scientific machine learning tasks, just as large language models (LLM) like GPT for natural language processing (NLP)?
-
-Many scientific learning tasks can be seen as operator learning problems, where an operator transforms a "condition" function into a "quantity of interest (QoI)" function. Past attempts have been made to approximate operators with neural networks. However, in these methods, one neural network is limited to approximating one operator, requiring retraining, at least fine-tuning, for even small changes in equations.
-
-In this paper, we made a huge step forward by introducing "In-Context Operator Networks (ICON)". A distinguishing feature of ICON is its ability to learn operators from data prompts, during the inference phase without weight adjustments. In essence, this transformer-based model is trained to act as a generalist operator learner rather than being tuned as a specific operator approximator, so that a single model can tackle a variety of tasks involving diverse operators. 
-
-As an example, in this paper, a single neural network adeptly manages 19 distinct problem types, encompassing forward and inverse ODE, PDE, and mean field control problems, each spanning a continuous spectrum of operators. The learning capability is even generalized to operators beyond the training distribution, without any fine-tuning. 
-
-
-ICON draws inspiration from the success of LLM for general NLP tasks. We believe that it shows a promising direction to build large models for general scientific machine learning tasks.
-
-The paper is published in [*Proceedings of the National Academy of Sciences (PNAS)*](https://www.pnas.org/doi/10.1073/pnas.2310142120). Code are in folder `icon/`. See more details in `icon/README.md`.
-
-
-## Fine-Tune Language Models as Multi-Modal Differential Equation Solvers
-
-We transform the in-context operator learning into a multi-modal framework by introducing "captions" as a means to incorporate human knowledge about the operator, in the form of natural language descriptions and equations.
-
-Moreover, we introduce a novel approach, namely "ICON-LM", to train a language-model-like architecture, or directly fine-tune existing language models, for in-context operator learning. Inspired by "next token prediction" in language models, ICON-LM is trained via "next function prediction". ICON-LM significantly outperforms the vanilla ICON model, in that it achieves better accuracy with about half of the parameters, with less training time and similar memory consumption.
-
-By bridging language models with operator learning and data-driven differential equation solvers, we have not only achieved substantial advancements in this specific domain, but also opened up a new avenue for the application of language models in scientific machine learning, a realm that remains largely under-explored.
-
-See the [paper](https://arxiv.org/pdf/2308.05061.pdf) for more details. Code are in folder `icon-lm/`. See more details in `icon-lm/README.md`.
-
-## PDE Generalization of In-Context Operator Networks: A Study on 1D Scalar Nonlinear Conservation Laws
-
-In this paper, we present a detailed methodology for solving PDE problems with ICON, and show how a single ICON model can make forward and reverse predictions for different equations with different strides, provided with appropriately designed data prompts. This is exemplified through a study on 1D scalar nonlinear conservation laws, a family of PDEs with temporal evolution. 
-
-We show the positive evidence that ICON can generalize well to PDEs with new forms without any fine-tuning. In particular, an ICON model trained on conservation laws with cubic flux functions can generalize well to some other flux functions of more general forms, without fine-tuning. We also showed prompt engineer techniques to broaden the range of problems that an ICON model can address.
-
-See the [paper](https://www.sciencedirect.com/science/article/pii/S0021999124006272) for more details. Code are in folder `icon-lm/`. See more details in `icon-lm/README.md`.
-
-## Reference:
 ```
-@article{yang2023context,
-  title={In-context operator learning with data prompts for differential equation problems},
-  author={Yang, Liu and Liu, Siting and Meng, Tingwei and Osher, Stanley J},
-  journal={Proceedings of the National Academy of Sciences},
-  volume={120},
-  number={39},
-  pages={e2310142120},
-  year={2023},
-  publisher={National Acad Sciences}
-}
-
-@article{yang2023FineTune,
-  title={Fine-Tune Language Models as Multi-Modal Differential Equation Solvers},
-  author={Yang, Liu and Liu, Siting and Osher, Stanley J},
-  journal={arXiv preprint arXiv:2308.05061},
-  year={2023}
-}
-
-@article{yang2024pde,
-  title={{PDE} Generalization of In-Context Operator Networks: A Study on {1D} Scalar Nonlinear Conservation Laws},
-  author={Yang, Liu and Osher, Stanley J},
-  journal = {Journal of Computational Physics},
-  volume = {519},
-  pages = {113379},
-  year = {2024},
-  issn = {0021-9991},
-  doi = {https://doi.org/10.1016/j.jcp.2024.113379},
-  url = {https://www.sciencedirect.com/science/article/pii/S0021999124006272},
-}
+u_t + u·u_x = ν·u_xx
 ```
 
+The hidden operator is the viscosity ν. Given a few demonstration
+trajectories (input → output pairs) for a fixed ν, the model predicts the
+output trajectory for a new query input — without any weight updates or
+fine-tuning. Optional natural-language captions ("precise" or "vague"
+descriptions of ν) can be included in the prompt to study how much
+language conditioning helps in-context prediction.
+
+This example is based on the ICON-LM approach described in:
+
+> Yang, L., Liu, S., Osher, S. J. *Fine-Tune Language Models as Multi-Modal
+> Differential Equation Solvers*.
+> [https://ww3.math.ucla.edu/wp-content/uploads/2024/05/ICON_LM_202405-1.pdf](https://ww3.math.ucla.edu/wp-content/uploads/2024/05/ICON_LM_202405-1.pdf)
+
+All code lives in [`burgers-example/`](burgers-example/).
+
+## What's in `burgers-example/`
+
+| File | Purpose |
+|---|---|
+| `data.py` | Generates 1D viscous Burgers trajectories via a spectral (FFT) RHS + SciPy RK45 solver, for a range of log-uniform ν values. Also builds natural-language captions describing each ν. |
+| `model.py` | Defines `ICONLM`, a small transformer that operates on sequences of `(condition, target, query)` token blocks, plus the attention-mask builder `build_mask`. |
+| `train.py` | Trains the model: samples prompts (J demonstrations + 1 query) per operator, with sentence-embedding captions mixed in. Writes `checkpoint.pt`, `test_data.npz`, and `metrics.tex`. |
+| `evaluate.py` | Evaluates the trained model: (1) forward context-scaling — relative L2 error vs. number of demo shots, for precise/vague/no-caption prompts; (2) inverse viscosity estimation via nearest-centroid classification. Writes `context_scaling.csv`, `inverse_confusion.csv`, `eval_metrics.tex`. |
+| `plot.py` | Re-runs the forward context-scaling evaluation and produces the result figures and CSV: `scaling_curve.png`, `zero_shot_bar.png`, `scaling_results.csv`. |
+| `run.sh` | Runs the full pipeline (`train.py` → `evaluate.py` → `plot.py`) end to end. |
+| `requirements.txt` | Python dependencies (`numpy`, `matplotlib`, `torch`, plus `scipy` and `sentence-transformers` used by `data.py`/`train.py`). |
+| `checkpoint.pt`, `test_data.npz` | A pre-trained model checkpoint and held-out test set, so `evaluate.py`/`plot.py` can be run without retraining. |
+
+## How to run it
+
+From the `burgers-example/` directory:
+
+```bash
+# Full pipeline: train -> evaluate -> plot
+./run.sh
+
+# Or run steps individually:
+python train.py | tee train.log        # trains and saves checkpoint.pt + test_data.npz
+python evaluate.py | tee eval.log       # forward/inverse evaluation
+python plot.py                          # scaling_curve.png, zero_shot_bar.png, scaling_results.csv
+```
+
+If `checkpoint.pt` and `test_data.npz` already exist (as committed here),
+you can skip straight to `python evaluate.py` or `python plot.py` to
+reproduce the figures from the pre-trained model.
+
+## Key result
+
+`scaling_curve.png` shows relative L2 error vs. number of in-context
+demonstrations (shots), for three prompt types: no caption, a vague
+language description of ν, and a precise (numeric) description of ν.
+Captions provide the largest benefit at 0 shots, with the gap narrowing
+as more demonstrations are added. The underlying numbers are in
+`scaling_results.csv`.
+
+![scaling curve](burgers-example/scaling_curve.png)

@@ -1,0 +1,13 @@
+shots,caption_mode,relative_l2_percent_mean,relative_l2_percent_std
+0,none,22.7681,0.3472
+1,none,15.6097,0.5697
+2,none,16.0797,0.3843
+3,none,15.9536,0.5903
+0,vague,16.1497,0.6162
+1,vague,14.7022,0.4695
+2,vague,15.0913,0.2866
+3,vague,15.0623,0.4899
+0,precise,14.5532,0.3727
+1,precise,13.9184,0.4091
+2,precise,14.2925,0.2601
+3,precise,14.3832,0.4175

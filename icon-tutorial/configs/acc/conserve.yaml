@@ -1,4 +1,0 @@
-amp: false
-amp_dtype: fp32
-compile: False
-sdpa_cudnn: False
