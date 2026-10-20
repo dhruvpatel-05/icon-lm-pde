@@ -1,66 +1,67 @@
-# Burgers ICON-LM Example
+# In-Context Operator Networks for Solving PDEs
 
-This repository contains a small, self-contained example of **In-Context
-Operator Networks with Language captions (ICON-LM)** applied to the 1D
-viscous Burgers equation:
+A compact reproduction of **ICON-LM** (In-Context Operator Networks with Language captions) applied to the 1D viscous Burgers equation. A 2.21M-parameter transformer learns to solve a PDE from a few example input/output pairs in its prompt, with no weight updates or fine-tuning at inference time.
 
-```
-u_t + u·u_x = ν·u_xx
-```
+Built for UCLA MATH 270A by Dhruv Patel and Aditya Patil, based on:
 
-The hidden operator is the viscosity ν. Given a few demonstration
-trajectories (input → output pairs) for a fixed ν, the model predicts the
-output trajectory for a new query input — without any weight updates or
-fine-tuning. Optional natural-language captions ("precise" or "vague"
-descriptions of ν) can be included in the prompt to study how much
-language conditioning helps in-context prediction.
+> Yang, L., Liu, S., Osher, S. J. *Fine-Tune Language Models as Multi-Modal Differential Equation Solvers.* [Paper](https://ww3.math.ucla.edu/wp-content/uploads/2024/05/ICON_LM_202405-1.pdf)
 
-This example is based on the ICON-LM approach described in:
+## The problem
 
-> Yang, L., Liu, S., Osher, S. J. *Fine-Tune Language Models as Multi-Modal
-> Differential Equation Solvers*.
-> [https://ww3.math.ucla.edu/wp-content/uploads/2024/05/ICON_LM_202405-1.pdf](https://ww3.math.ucla.edu/wp-content/uploads/2024/05/ICON_LM_202405-1.pdf)
+$$u_t + u\,u_x = \nu\,u_{xx}$$
 
-All code lives in [`burgers-example/`](burgers-example/).
+The hidden operator is the viscosity ν. Each prompt contains J demonstration trajectories (initial condition → solution) generated with the same ν, plus one query initial condition. The model predicts the query's solution by inferring ν from the demonstrations in context.
 
-## What's in `burgers-example/`
+Prompts can optionally include a natural-language caption describing ν, either **precise** (a numeric value) or **vague** (a qualitative description), to test how much language conditioning helps.
+
+## Results
+
+| Prompt | 0 shots | 1 shot | 2 shots | 3 shots |
+|---|---|---|---|---|
+| No caption | 21.99% | 15.99% | 15.92% | 15.02% |
+| Vague caption | 16.07% | 15.24% | 15.37% | 14.37% |
+| Precise caption | 18.38% | 15.60% | 15.66% | 14.93% |
+
+*Relative L2 error on held-out viscosities and initial conditions.*
+
+- **In-context learning works:** with no caption, error falls from 22% to 15% as demonstrations go from 0 to 3, with no retraining. Most of the gain comes from the first example, since one trajectory already reveals how strongly the flow is damped.
+- **Captions help most when there are no examples:** a vague caption cuts zero-shot error by about 27% relative to no caption. The benefit shrinks as demonstrations are added.
+- **Exact numbers in text are hard to use:** the frozen sentence encoder is weak at distinguishing nearby numeric strings, so precise captions with the viscosity value were not reliably more useful than vague ones.
+
+As a separate sanity check, a nearest-centroid classifier on five hand-crafted trajectory features recovers the viscosity bin with 81% accuracy over five bins, confirming that the trajectories carry recoverable information about ν (see `evaluate.py`).
+
+![Scaling curve](burgers-example/scaling_curve.png)
+
+## Implementation
 
 | File | Purpose |
 |---|---|
-| `data.py` | Generates 1D viscous Burgers trajectories via a spectral (FFT) RHS + SciPy RK45 solver, for a range of log-uniform ν values. Also builds natural-language captions describing each ν. |
-| `model.py` | Defines `ICONLM`, a small transformer that operates on sequences of `(condition, target, query)` token blocks, plus the attention-mask builder `build_mask`. |
-| `train.py` | Trains the model: samples prompts (J demonstrations + 1 query) per operator, with sentence-embedding captions mixed in. Writes `checkpoint.pt`, `test_data.npz`, and `metrics.tex`. |
-| `evaluate.py` | Evaluates the trained model: (1) forward context-scaling — relative L2 error vs. number of demo shots, for precise/vague/no-caption prompts; (2) inverse viscosity estimation via nearest-centroid classification. Writes `context_scaling.csv`, `inverse_confusion.csv`, `eval_metrics.tex`. |
-| `plot.py` | Re-runs the forward context-scaling evaluation and produces the result figures and CSV: `scaling_curve.png`, `zero_shot_bar.png`, `scaling_results.csv`. |
-| `run.sh` | Runs the full pipeline (`train.py` → `evaluate.py` → `plot.py`) end to end. |
-| `requirements.txt` | Python dependencies (`numpy`, `matplotlib`, `torch`, plus `scipy` and `sentence-transformers` used by `data.py`/`train.py`). |
-| `checkpoint.pt`, `test_data.npz` | A pre-trained model checkpoint and held-out test set, so `evaluate.py`/`plot.py` can be run without retraining. |
+| `data.py` | Generates Burgers trajectories with a spectral (FFT) right-hand side and SciPy's RK45 solver over log-uniform ν, and builds the precise and vague captions |
+| `model.py` | `ICONLM`, a small transformer over `(condition, target, query)` token blocks, plus `build_mask`, the custom attention mask that keeps queries from attending to their own targets |
+| `train.py` | Samples prompts (J demos + 1 query) per operator, mixes in sentence-embedding captions, and saves `checkpoint.pt` and `test_data.npz` |
+| `evaluate.py` | Forward evaluation of error vs. number of shots for each caption type, plus inverse ν estimation |
+| `plot.py` | Produces `scaling_curve.png`, `zero_shot_bar.png`, and `scaling_results.csv` |
+| `run.sh` | Runs the full pipeline: train → evaluate → plot |
 
-## How to run it
+**Stack:** Python, PyTorch, NumPy, SciPy, sentence-transformers, Matplotlib
 
-From the `burgers-example/` directory:
+## Running it
 
 ```bash
-# Full pipeline: train -> evaluate -> plot
+cd burgers-example
+pip install -r requirements.txt
+
+# Full pipeline
 ./run.sh
 
-# Or run steps individually:
-python train.py | tee train.log        # trains and saves checkpoint.pt + test_data.npz
-python evaluate.py | tee eval.log       # forward/inverse evaluation
-python plot.py                          # scaling_curve.png, zero_shot_bar.png, scaling_results.csv
+# Or skip training and use the included checkpoint
+python evaluate.py
+python plot.py
 ```
 
-If `checkpoint.pt` and `test_data.npz` already exist (as committed here),
-you can skip straight to `python evaluate.py` or `python plot.py` to
-reproduce the figures from the pre-trained model.
+A pre-trained `checkpoint.pt` and held-out `test_data.npz` are included, so you can reproduce every figure without retraining.
 
-## Key result
+## Write-up
 
-`scaling_curve.png` shows relative L2 error vs. number of in-context
-demonstrations (shots), for three prompt types: no caption, a vague
-language description of ν, and a precise (numeric) description of ν.
-Captions provide the largest benefit at 0 shots, with the gap narrowing
-as more demonstrations are added. The underlying numbers are in
-`scaling_results.csv`.
-
-![scaling curve](burgers-example/scaling_curve.png)
+- [`Paper.pdf`](Paper.pdf): full report with methods and results
+- [`Presentation.pdf`](Presentation.pdf): slides from the final presentation
