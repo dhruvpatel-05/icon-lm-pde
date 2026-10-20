@@ -30,8 +30,6 @@ Prompts can optionally include a natural-language caption describing ν, either 
 
 As a separate sanity check, a nearest-centroid classifier on five hand-crafted trajectory features recovers the viscosity bin with 81% accuracy over five bins, confirming that the trajectories carry recoverable information about ν (see `evaluate.py`).
 
-![Scaling curve](burgers-example/scaling_curve.png)
-
 ## Implementation
 
 | File | Purpose |
